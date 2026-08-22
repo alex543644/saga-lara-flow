@@ -84,6 +84,15 @@ final readonly class ActionRecorder
         return $actionRun;
     }
 
+    /**
+     * How long the doctor leaves a freshly dispatched action alone before calling its
+     * job lost.
+     */
+    private function repairGrace(): int
+    {
+        return (int) config('saga-lara-flow.repair.grace_seconds', 60);
+    }
+
     private function defaultExpiry(): ?DateTimeInterface
     {
         $seconds = config('saga-lara-flow.monitor.expiration.defaults.action');
@@ -269,6 +278,15 @@ final readonly class ActionRecorder
         // A fresh job means a fresh native-attempt allowance: the queue has not given
         // up on this cycle yet, whatever it did to the previous one.
         $actionRun->queue_attempts_exhausted = false;
+
+        // The doctor holds a fresh Pending row off for grace_seconds by comparing
+        // created_at, which a reused row passed long ago. Without an explicit hold it
+        // would treat this cycle's job as lost the instant it is dispatched and send a
+        // second one, and the generation token cannot tell two jobs of the same cycle
+        // apart. The attempt counter restarts with the cycle for the same reason: a
+        // budget spent on earlier cycles must not deny this one its recovery.
+        $actionRun->repair_attempts = 0;
+        $actionRun->repair_available_at = Carbon::now()->addSeconds($this->repairGrace());
 
         $deadline = $expiresAt ?? $this->defaultExpiry();
 

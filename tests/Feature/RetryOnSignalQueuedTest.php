@@ -507,6 +507,112 @@ it('leaves a parked step alone in the monitor and the doctor', function () {
         ->and(FlakyPaymentAction::$calls)->toBe(1);
 });
 
+/**
+ * Park a step, age it past the repair grace window the way a real wait would, then
+ * deliver the signal and stop the queue the moment the seam has committed the retry
+ * and dispatched its job — the window in which the doctor may mistake that job for
+ * a lost one.
+ */
+function stageDispatchedRetry(string $orderId): ActionRun
+{
+    useDatabaseQueue();
+    config()->set('saga-lara-flow.repair.enabled', true);
+
+    $run = SagaFlow::create(RetryOnSignalWorkflow::class)->withArguments($orderId)->run();
+    drainQueue();
+
+    $run = SagaFlow::findRun($run->id);
+    $step = $run->actions()->where('sequence', 1)->first();
+
+    expect($step->status)->toBe(ActionStatus::AwaitingRetry);
+
+    // A real wait outlives the grace window many times over, and the row keeps the
+    // created_at it was first scheduled with.
+    ActionRun::query()->whereKey($step->id)->update(['created_at' => now()->subMinutes(10)]);
+
+    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+
+    workUntilStatus($run, 1, ActionStatus::Pending);
+
+    return $step->fresh();
+}
+
+it('does not let the doctor duplicate the job of a retry cycle it just started', function () {
+    FlakyPaymentAction::reset(failures: 99);
+
+    $step = stageDispatchedRetry('order-q31');
+
+    expect($step->retry_signal_attempts)->toBe(1)
+        ->and(DB::connection('testing')->table('jobs')->count())->toBe(1);
+
+    // The row is older than the grace window, so only the hold written with the retry
+    // keeps the doctor off it.
+    expect(app(FlowDoctor::class)->repair()->redispatchedActions)->toBe(0)
+        ->and(DB::connection('testing')->table('jobs')->count())->toBe(1);
+
+    drainQueue();
+
+    // One signal, one execution. A second job for the same generation would have run
+    // the step again on the failure, since the generation token cannot tell the two
+    // apart and Failed is deliberately not in the job's skip list.
+    expect(FlakyPaymentAction::$calls)->toBe(2)
+        ->and($step->fresh()->retry_signal_attempts)->toBe(1);
+});
+
+it('still recovers a retry job that was genuinely lost', function () {
+    FlakyPaymentAction::reset(failures: 1);
+
+    $step = stageDispatchedRetry('order-q32');
+
+    // The hold is a delay, not an exemption: drop the job and let it expire.
+    DB::connection('testing')->table('jobs')->delete();
+
+    ActionRun::query()->whereKey($step->id)->update(['repair_available_at' => now()->subMinute()]);
+
+    expect(app(FlowDoctor::class)->repair()->redispatchedActions)->toBe(1);
+
+    drainQueue();
+
+    $final = SagaFlow::findRun($step->flow_run_id);
+
+    expect($final->status)->toBe(FlowStatus::Completed)
+        ->and($final->actions()->where('sequence', 1)->first()->status)->toBe(ActionStatus::Completed);
+});
+
+it('gives each retry cycle its own repair budget', function () {
+    FlakyPaymentAction::reset(failures: 1);
+
+    useDatabaseQueue();
+    config()->set('saga-lara-flow.repair.enabled', true);
+
+    $run = SagaFlow::create(RetryOnSignalWorkflow::class)->withArguments('order-q33')->run();
+    drainQueue();
+
+    $run = SagaFlow::findRun($run->id);
+    $step = $run->actions()->where('sequence', 1)->first();
+
+    // Repairs spent before the step ever parked: without a reset they would deny this
+    // cycle the recovery it has not used yet.
+    ActionRun::query()->whereKey($step->id)->update([
+        'created_at' => now()->subMinutes(10),
+        'repair_attempts' => (int) config('saga-lara-flow.repair.max_attempts'),
+    ]);
+
+    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+
+    workUntilStatus($run, 1, ActionStatus::Pending);
+
+    $step->refresh();
+
+    expect($step->repair_attempts)->toBe(0);
+
+    DB::connection('testing')->table('jobs')->delete();
+
+    ActionRun::query()->whereKey($step->id)->update(['repair_available_at' => now()->subMinute()]);
+
+    expect(app(FlowDoctor::class)->repair()->redispatchedActions)->toBe(1);
+});
+
 it('does not restart or re-park a parked step while collecting compensations', function () {
     useDatabaseQueue();
     FlakyPaymentAction::reset(failures: 99);
