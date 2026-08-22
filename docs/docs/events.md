@@ -1,7 +1,7 @@
 ---
 id: events
 title: Events
-sidebar_position: 20
+sidebar_position: 21
 ---
 
 # Events
@@ -32,7 +32,8 @@ Flow lifecycle: `FlowStarted`, `FlowCompleted`, `FlowFailed`, `FlowWaiting`, `Fl
 `FlowRewoken`, `FlowCancelled`, `FlowExpired`.
 
 Actions: `ActionStarted`, `ActionCompleted`, `ActionFailed`, `ActionRedispatched`,
-`OptionalActionFailed`.
+`OptionalActionFailed`, `ActionAwaitingRetry`, `ActionRetried` (the last two cover
+[retry on signal](./retry-on-signal.md)).
 
 Compensations: `CompensationStarted`, `CompensationCompleted`, `CompensationFailed`.
 
@@ -43,6 +44,13 @@ Signals & side effects: `FlowSignalReceived`, `FlowSignalConsumed`, `SideEffectR
 `SideEffectReused`.
 
 (See `src/Events` for the full list.)
+
+:::warning Listeners must be queued, or must not throw
+These events are dispatched from inside the engine's replay. A synchronous listener that throws
+interrupts the replay at that point, and the engine reads the exception as a business failure — it
+can fail and compensate a run that was doing fine. Mark your listeners `ShouldQueue`, or make sure
+they cannot throw.
+:::
 
 ## Cancellation reason
 

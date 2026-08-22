@@ -1,7 +1,7 @@
 ---
 id: synchronous-execution
 title: Synchronous execution
-sidebar_position: 15
+sidebar_position: 16
 ---
 
 # Synchronous execution

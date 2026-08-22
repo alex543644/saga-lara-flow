@@ -251,7 +251,7 @@ final readonly class FlowDoctor
     {
         $flow = $action->flowRun;
 
-        $job = RunActionJob::dispatch($action->id, $action->action_class);
+        $job = RunActionJob::dispatch($action->id, $action->action_class, $action->retry_signal_attempts);
 
         if ($flow->connection !== null) {
             $job->onConnection($flow->connection);

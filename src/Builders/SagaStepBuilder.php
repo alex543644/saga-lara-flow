@@ -11,8 +11,9 @@ use Throwable;
  * One step of a saga() group: an action plus its compensation. compensateWith()
  * (class or closure), an optional per-step onCompensationFailure() and
  * compensateStepOnSelfFailure() override the group settings (precedence action > group >
- * config). step()/run() delegate back to the group so the fluent chain reads as a
- * single transactional block.
+ * config). retryOnSignal() mirrors the action-level policy so a step inside a group
+ * can park on a signal too. step()/run() delegate back to the group so the fluent
+ * chain reads as a single transactional block.
  */
 final class SagaStepBuilder
 {
@@ -26,6 +27,17 @@ final class SagaStepBuilder
     private ?CompensationFailurePolicy $policy = null;
 
     private ?bool $compensateOnSelfFailure = null;
+
+    private ?string $retrySignal = null;
+
+    private ?int $retryMaxRetries = null;
+
+    private ?int $retryWaitSeconds = null;
+
+    /**
+     * @var list<class-string<Throwable>>|null
+     */
+    private ?array $retryOnly = null;
 
     /**
      * @param  array<int, mixed>  $arguments
@@ -54,6 +66,28 @@ final class SagaStepBuilder
     public function compensateStepOnSelfFailure(bool $compensate = true): self
     {
         $this->compensateOnSelfFailure = $compensate;
+
+        return $this;
+    }
+
+    /**
+     * Wait for a named signal instead of failing this step. Mirrors
+     * ActionBuilder::retryOnSignal(), which documents the semantics. A parked step
+     * suspends the group where it stands: the steps already completed keep their
+     * compensations on the stack and roll back only if this one eventually gives up.
+     *
+     * @param  list<class-string<Throwable>>|null  $only
+     */
+    public function retryOnSignal(
+        string $signal,
+        ?int $maxRetries = null,
+        ?int $waitSeconds = null,
+        ?array $only = null,
+    ): self {
+        $this->retrySignal = $signal;
+        $this->retryMaxRetries = $maxRetries;
+        $this->retryWaitSeconds = $waitSeconds;
+        $this->retryOnly = $only;
 
         return $this;
     }
@@ -97,6 +131,15 @@ final class SagaStepBuilder
 
         if ($this->compensateOnSelfFailure !== null) {
             $action->compensateStepOnSelfFailure($this->compensateOnSelfFailure);
+        }
+
+        if ($this->retrySignal !== null) {
+            $action->retryOnSignal(
+                $this->retrySignal,
+                $this->retryMaxRetries,
+                $this->retryWaitSeconds,
+                $this->retryOnly,
+            );
         }
 
         return $action

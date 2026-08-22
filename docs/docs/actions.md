@@ -108,4 +108,6 @@ extend `FlowException` and are safe to catch; the two internal signals are the *
 :::
 
 To make a failing action *not* fail the flow, see [Optional actions](./optional-actions.md). To undo
-completed work when a later step fails, see [Sagas & compensations](./sagas-and-compensation.md).
+completed work when a later step fails, see [Sagas & compensations](./sagas-and-compensation.md). To
+park a failed step until an external signal says it is worth trying again — without rolling anything
+back — see [Retry on signal](./retry-on-signal.md).

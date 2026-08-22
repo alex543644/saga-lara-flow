@@ -18,9 +18,16 @@ Run the migrations:
 php artisan migrate
 ```
 
-The engine's migration ships with the package and is loaded into the migrator directly, so
-`migrate` picks it up with **no publish step**. Future versions add their migrations the same way —
+The engine's migrations ship with the package and are loaded into the migrator directly, so
+`migrate` picks them up with **no publish step**. Future versions add their migrations the same way —
 `composer update` then `php artisan migrate` is all a host app needs.
+
+:::danger Always migrate after an upgrade
+Skipping `php artisan migrate` after upgrading is not a "the new feature is unavailable" situation —
+the engine writes the new columns for **every** action it schedules, so a host app that upgrades
+without migrating breaks ordinary workflow execution with an unknown-column error. See
+[UPGRADING.md](https://github.com/discovery-ukraine/saga-lara-flow/blob/main/UPGRADING.md).
+:::
 
 Optionally publish the config file:
 
@@ -49,8 +56,9 @@ discovery — no manual wiring required.
 
 ## What gets installed
 
-- A single migration, `create_saga_lara_flow_initial_tables`, creating the engine's tables
-  (flow runs, action runs, events, signals, tags, children, compensations, side effects), all
-  prefixed with `saga_` by default.
+- Two migrations. `create_saga_lara_flow_initial_tables` creates the engine's tables (flow runs,
+  action runs, events, signals, tags, children, compensations, side effects), all prefixed with
+  `saga_` by default; `add_retry_on_signal_to_action_runs` adds the columns backing
+  [retry on signal](./retry-on-signal.md) to `action_runs`.
 - The `config/saga-lara-flow.php` config file (see [Configuration](./configuration.md)).
 - The `SagaFlow` facade and a set of `saga-flow:*` Artisan commands.

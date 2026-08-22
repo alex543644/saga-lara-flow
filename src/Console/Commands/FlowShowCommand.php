@@ -2,6 +2,9 @@
 
 namespace DiscoveryUkraine\SagaLaraFlow\Console\Commands;
 
+use DiscoveryUkraine\SagaLaraFlow\Enums\ActionStatus;
+use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
+use DiscoveryUkraine\SagaLaraFlow\Enums\SignalStatus;
 use DiscoveryUkraine\SagaLaraFlow\FlowManager;
 use DiscoveryUkraine\SagaLaraFlow\Models\ActionRun;
 use DiscoveryUkraine\SagaLaraFlow\Models\CompensationRun;
@@ -73,6 +76,8 @@ class FlowShowCommand extends Command
             return;
         }
 
+        $signals = $this->openRetrySignals($run);
+
         $rows = [];
 
         /** @var ActionRun $action */
@@ -82,11 +87,67 @@ class FlowShowCommand extends Command
                 $action->status->value,
                 $action->action_name ?? class_basename($action->action_class),
                 $action->attempts,
+                $this->formatRetry($run, $action, $signals),
                 (string) $action->finished_at,
             ];
         }
 
-        $this->table(['Seq', 'Status', 'Action', 'Attempts', 'Finished'], $rows);
+        $this->table(['Seq', 'Status', 'Action', 'Attempts', 'Retry', 'Finished'], $rows);
+    }
+
+    /**
+     * The still-open wait-signals of this run, keyed by the sequence they park — where
+     * the deadline lives for a step showing up as awaiting_retry.
+     *
+     * @return array<int, FlowSignal>
+     */
+    private function openRetrySignals(FlowRun $run): array
+    {
+        $signals = [];
+
+        $waiting = $run->signals()
+            ->where('status', SignalStatus::Waiting)
+            ->whereNotNull('wait_sequence')
+            ->get();
+
+        /** @var FlowSignal $signal */
+        foreach ($waiting as $signal) {
+            $signals[(int) $signal->wait_sequence] = $signal;
+        }
+
+        return $signals;
+    }
+
+    /**
+     * The retry cell for one step: the signal it waits on and how much of its budget
+     * is spent (an unset max is unbounded), plus the current wait deadline while the
+     * step is actually parked. Steps without a retry policy stay blank.
+     *
+     * The deadline shows only while the run itself is Waiting: a cancelled run keeps
+     * both the AwaitingRetry step and its timeout_at, and "until ..." there would be a
+     * countdown for a wait nothing will resolve.
+     *
+     * @param  array<int, FlowSignal>  $signals
+     */
+    private function formatRetry(FlowRun $run, ActionRun $action, array $signals): string
+    {
+        if ($action->retry_signal === null) {
+            return '—';
+        }
+
+        $max = $action->retry_signal_max_attempts === null
+            ? '∞'
+            : (string) $action->retry_signal_max_attempts;
+
+        $label = "{$action->retry_signal} {$action->retry_signal_attempts}/{$max}";
+
+        if ($action->status !== ActionStatus::AwaitingRetry || $run->status !== FlowStatus::Waiting) {
+            return $label;
+        }
+
+        $signal = $signals[$action->sequence] ?? null;
+
+        return $signal?->timeout_at === null ? $label : "{$label} until {$signal->timeout_at}";
     }
 
     private function renderSignals(FlowRun $run): void
@@ -99,10 +160,16 @@ class FlowShowCommand extends Command
 
         /** @var FlowSignal $signal */
         foreach ($run->signals as $signal) {
-            $rows[] = [$signal->name, $signal->status->value, (string) $signal->received_at];
+            $rows[] = [
+                $signal->name,
+                $signal->status->value,
+                $signal->wait_sequence ?? '—',
+                (string) $signal->received_at,
+                (string) $signal->timeout_at,
+            ];
         }
 
-        $this->table(['Signal', 'Status', 'Received'], $rows);
+        $this->table(['Signal', 'Status', 'Seq', 'Received', 'Timeout'], $rows);
     }
 
     private function renderCompensations(FlowRun $run): void

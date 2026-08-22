@@ -1,7 +1,7 @@
 ---
 id: optional-actions
 title: Optional actions
-sidebar_position: 10
+sidebar_position: 11
 ---
 
 # Optional actions
@@ -46,3 +46,9 @@ class FetchRiskScore extends Action
 
 Optional actions work inside [parallel blocks](./parallel.md) too, letting a non-critical step fail
 without tearing down the group.
+
+## Combined with a retry policy
+
+An optional action can also carry [`retryOnSignal()`](./retry-on-signal.md). The retry layer runs
+first: the step parks and waits for its signal, and the fallback value is only returned once the
+retry budget is spent or the wait times out.

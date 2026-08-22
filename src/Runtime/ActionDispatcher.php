@@ -9,6 +9,7 @@ use DiscoveryUkraine\SagaLaraFlow\Jobs\RunActionJob;
 use DiscoveryUkraine\SagaLaraFlow\Models\ActionRun;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
 use DiscoveryUkraine\SagaLaraFlow\Support\TenancyManager;
+use Illuminate\Foundation\Bus\PendingDispatch;
 use Throwable;
 
 /**
@@ -40,6 +41,8 @@ class ActionDispatcher
         bool $continueOnFailure = false,
         ?DateTimeInterface $expiresAt = null,
         ?string $actionName = null,
+        ?string $retrySignal = null,
+        ?int $retrySignalMaxAttempts = null,
     ): ActionRun {
         $actionRun = $this->recorder->scheduleAction(
             $flowRun,
@@ -51,10 +54,43 @@ class ActionDispatcher
             null,
             $expiresAt,
             $actionName,
+            $retrySignal,
+            $retrySignalMaxAttempts,
         );
 
-        $job = RunActionJob::dispatch($actionRun->id, $actionClass);
+        $this->route(
+            RunActionJob::dispatch($actionRun->id, $actionClass, $actionRun->retry_signal_attempts),
+            $flowRun,
+        );
 
+        return $actionRun;
+    }
+
+    /**
+     * Send a fresh RunActionJob for a step that is already persisted and has just
+     * been rewound to Pending by a signal-gated retry. The row — and therefore its
+     * (flow_run_id, sequence) ordinal, arguments and history — is reused as is. The
+     * job carries the cycle it belongs to, so a job left over from an earlier cycle
+     * recognises itself as stale and does nothing.
+     */
+    public function redispatch(ActionRun $actionRun): void
+    {
+        $this->route(
+            RunActionJob::dispatch(
+                $actionRun->id,
+                $actionRun->action_class,
+                $actionRun->retry_signal_attempts,
+            ),
+            $actionRun->flowRun,
+        );
+    }
+
+    /**
+     * Put an action job on the run's own connection/queue, honouring the package's
+     * after_commit setting. Shared by the first dispatch and by every retry.
+     */
+    private function route(PendingDispatch $job, FlowRun $flowRun): void
+    {
         if ($flowRun->connection !== null) {
             $job->onConnection($flowRun->connection);
         }
@@ -66,8 +102,6 @@ class ActionDispatcher
         if (config('saga-lara-flow.queue.after_commit')) {
             $job->afterCommit();
         }
-
-        return $actionRun;
     }
 
     /**
@@ -87,6 +121,8 @@ class ActionDispatcher
         ?int $parallelGroup = null,
         ?DateTimeInterface $expiresAt = null,
         ?string $actionName = null,
+        ?string $retrySignal = null,
+        ?int $retrySignalMaxAttempts = null,
     ): ActionRun {
         $actionRun = $this->recorder->scheduleAction(
             $run,
@@ -98,6 +134,8 @@ class ActionDispatcher
             $parallelGroup,
             $expiresAt,
             $actionName,
+            $retrySignal,
+            $retrySignalMaxAttempts,
         );
 
         $this->execute($actionRun);

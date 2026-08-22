@@ -1,7 +1,7 @@
 ---
 id: determinism-rules
 title: Determinism rules
-sidebar_position: 19
+sidebar_position: 20
 ---
 
 # Determinism rules
@@ -42,6 +42,10 @@ When a replay diverges from the recorded history — a different operation appea
 `sequence` than the one recorded — the engine raises `HistoryContractMismatchException`. Treat it as
 a signal that `handle()` became non-deterministic or that its code changed incompatibly for an
 in-flight run.
+
+A [signal-gated retry](./retry-on-signal.md) does not disturb this: a retried step keeps its own
+ordinal and reuses its `action_runs` row, and the waiting itself consumes no ordinal — so downstream
+steps land in the same place whether the step retried or not.
 
 ## Example
 

@@ -24,7 +24,7 @@ use Throwable;
  * configured batch size.
  *
  * Every transition the sweep performs moves the entity out of the status its scan
- * filters on (a run leaves Running/Waiting, a wait-marker Waiting→TimedOut, an
+ * filters on (a run leaves Running/Waiting, a wait-signal Waiting→TimedOut, an
  * action Pending/Running→Expired), so re-running sweep() is idempotent.
  */
 final readonly class FlowMonitor
@@ -134,7 +134,11 @@ final readonly class FlowMonitor
             return false;
         }
 
-        $this->signalRecorder->timeoutSignal($signal);
+        // Lost to a delivery that landed since the batch was read: the wait is over
+        // on its own terms, and the replay the delivery already scheduled resolves it.
+        if (! $this->signalRecorder->timeoutSignal($signal)) {
+            return false;
+        }
 
         $this->wake($run);
 

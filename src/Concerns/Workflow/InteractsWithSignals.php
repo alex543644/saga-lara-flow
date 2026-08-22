@@ -20,7 +20,7 @@ trait InteractsWithSignals
      * signal already arrived it resolves inline, otherwise the flow suspends and
      * resumes when the signal is delivered. Replays return the same payload.
      *
-     * Passing $timeout persists a deadline on the wait-marker: once it passes the
+     * Passing $timeout persists a deadline on the wait-signal: once it passes the
      * monitor times the wait out and this throws AwaitSignalTimeoutException on the
      * next replay (catch it to react, or let it fail and roll back the flow).
      *

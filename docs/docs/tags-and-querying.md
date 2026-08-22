@@ -1,7 +1,7 @@
 ---
 id: tags-and-querying
 title: Tags & querying
-sidebar_position: 12
+sidebar_position: 13
 ---
 
 # Tags & querying

@@ -16,6 +16,7 @@ const sidebars: SidebarsConfig = {
         'actions',
         'sagas-and-compensation',
         'signals',
+        'retry-on-signal',
         'side-effects',
         'parallel',
         'optional-actions',

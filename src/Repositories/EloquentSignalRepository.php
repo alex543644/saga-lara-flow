@@ -2,6 +2,7 @@
 
 namespace DiscoveryUkraine\SagaLaraFlow\Repositories;
 
+use DateTimeInterface;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\SignalRepository;
 use DiscoveryUkraine\SagaLaraFlow\Enums\SignalStatus;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowSignal;
@@ -28,6 +29,18 @@ class EloquentSignalRepository implements SignalRepository
             ->first();
     }
 
+    public function earliestPendingSince(string $flowRunId, string $name, ?DateTimeInterface $since): ?FlowSignal
+    {
+        return $this->model()::query()
+            ->where('flow_run_id', $flowRunId)
+            ->where('name', $name)
+            ->where('status', SignalStatus::Received)
+            ->whereNull('wait_sequence')
+            ->when($since !== null, fn ($query) => $query->where('received_at', '>=', $since))
+            ->orderBy('id')
+            ->first();
+    }
+
     public function earliestWaiting(string $flowRunId, string $name): ?FlowSignal
     {
         return $this->model()::query()
@@ -36,6 +49,15 @@ class EloquentSignalRepository implements SignalRepository
             ->where('status', SignalStatus::Waiting)
             ->whereNotNull('wait_sequence')
             ->orderBy('id')
+            ->first();
+    }
+
+    public function latestForSequence(string $flowRunId, int $sequence): ?FlowSignal
+    {
+        return $this->model()::query()
+            ->where('flow_run_id', $flowRunId)
+            ->where('wait_sequence', $sequence)
+            ->orderByDesc('id')
             ->first();
     }
 

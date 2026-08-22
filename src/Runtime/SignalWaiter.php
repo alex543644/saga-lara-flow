@@ -21,7 +21,7 @@ use DiscoveryUkraine\SagaLaraFlow\Models\FlowSignal;
  * Signals are the special identity case: a delivered signal carries no
  * sequence; an awaitSignal at ordinal S creates a wait-signal with wait_sequence
  * = S. A timeout deadline (awaitSignal(timeout:) / timeoutAfter()) is persisted on
- * the wait-marker; the monitor flips it to TimedOut after the deadline, and the
+ * the wait-signal; the monitor flips it to TimedOut after the deadline, and the
  * parked awaitSignal then resolves it by throwing AwaitSignalTimeoutException.
  */
 readonly class SignalWaiter
@@ -70,7 +70,7 @@ readonly class SignalWaiter
                 SignalStatus::Consumed => $this->serializer->deserialize($signal->payload),
                 // Delivered into the signal since we parked: consume and move on.
                 SignalStatus::Received => $this->consume($flowRun, $signal, $sequence),
-                // The monitor timed the wait-marker out: surface a business error the
+                // The monitor timed the wait-signal out: surface a business error the
                 // workflow may catch, otherwise it fails the flow and rolls back.
                 SignalStatus::TimedOut => throw AwaitSignalTimeoutException::for($signal, $sequence),
                 // Still parked (Waiting): keep waiting.

@@ -72,6 +72,7 @@ automatically, in reverse order.
 - [Actions](#actions)
 - [Sagas & compensations](#sagas--compensations)
 - [Signals](#signals)
+- [Retry on signal](#retry-on-signal)
 - [Side effects](#side-effects)
 - [Parallel actions](#parallel-actions)
 - [Optional actions](#optional-actions)
@@ -101,8 +102,12 @@ Run the migrations:
 php artisan migrate
 ```
 
-The engine's migration ships with the package, so `migrate` picks it up directly — no publish step.
+The engine's migrations ship with the package, so `migrate` picks them up directly — no publish step.
 Future versions add their migrations the same way: `composer update` then `php artisan migrate`.
+
+> **Always migrate after an upgrade.** The engine writes its newest columns for *every* action it
+> schedules, so upgrading without `php artisan migrate` breaks ordinary workflow execution with an
+> unknown-column error — not just the newest feature. See [UPGRADING.md](UPGRADING.md).
 
 Optionally publish the config file:
 
@@ -359,6 +364,36 @@ SagaFlow::query()
     ->first()
     ?->signal('owner-synced');
 ```
+
+## Retry on signal
+
+A step that fails hard takes the whole run with it: the saga rolls back and completed work is undone.
+`retryOnSignal()` parks such a step instead — the run waits, nothing rolls back, and when the named
+signal arrives **only that step runs again**:
+
+```php
+$this->action(ChargeCard::class, $orderId)
+    ->compensateWith(RefundCard::class, $orderId)
+    ->retryOnSignal(
+        'balance-refilled',
+        maxRetries: 3,                                  // null = unbounded, never negative
+        waitSeconds: 86400,                             // how long one wait may last
+        only: [InsufficientBalanceException::class],    // null = park on any exception
+    )
+    ->run();
+```
+
+Deliver `balance-refilled` the way you deliver any other signal and `ChargeCard` runs again, alone;
+earlier steps stay completed and un-compensated. The layers stack: Laravel's `$tries` first, then
+`retryOnSignal()`, then `continueOnFailure()`, then hard failure and compensation. When the budget is
+spent or the wait times out, the step fails exactly as it would have without the policy — same
+`ActionFailedException`, same rollback.
+
+A retry consumes **no new sequence**: the step reuses its own ordinal and `action_runs` row, so
+downstream steps land identically whether it retried or not. `saga()->step()` mirrors the method.
+
+`saga-flow:list` annotates a parked run with the signal it needs, `saga-flow:show` gains a **Retry**
+column, and two events (`ActionAwaitingRetry`, `ActionRetried`) cover the lifecycle.
 
 ## Side effects
 

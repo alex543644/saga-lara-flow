@@ -1,7 +1,7 @@
 ---
 id: artisan-commands
 title: Artisan commands
-sidebar_position: 16
+sidebar_position: 17
 ---
 
 # Artisan commands
@@ -40,6 +40,10 @@ php artisan saga-flow:cancel 01JABCDEF... --compensate
 # Re-drive a stuck run
 php artisan saga-flow:kick 01JABCDEF...
 ```
+
+A run parked by [retry on signal](./retry-on-signal.md) shows up as `waiting` in `saga-flow:list`,
+annotated with the signal it needs; `saga-flow:show` adds a **Retry** column with the signal, the
+spent budget, and the wait deadline. `saga-flow:signal` delivers the signal that restarts the step.
 
 Schedule `saga-flow:monitor` and `saga-flow:repair` for background maintenance — see
 [Expiration & monitoring](./expiration-and-monitoring.md).

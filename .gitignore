@@ -39,3 +39,4 @@ docs/.docusaurus
 # Private working docs (not shipped)
 CLAUDE.md
 IMPLEMENTATION_PLAN.md
+/.design

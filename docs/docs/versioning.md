@@ -1,7 +1,7 @@
 ---
 id: versioning
 title: Versioning long-running workflows
-sidebar_position: 17
+sidebar_position: 18
 ---
 
 # Versioning long-running workflows

@@ -1,7 +1,7 @@
 ---
 id: queues-locks-idempotency
 title: Queues, locks & idempotency
-sidebar_position: 14
+sidebar_position: 15
 ---
 
 # Queues, locks & idempotency

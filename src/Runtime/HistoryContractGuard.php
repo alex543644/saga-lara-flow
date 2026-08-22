@@ -106,6 +106,16 @@ final readonly class HistoryContractGuard
      */
     public function expectSignal(string $flowRunId, int $sequence, string $name): ?FlowSignal
     {
+        $requested = "signal '{$name}'";
+
+        // A signal is the one operation whose ordinal can already be occupied: a step
+        // parked by retryOnSignal() records its wait-signal at the step's OWN ordinal.
+        // So the cross-type check has to run before the row is handed back, not only
+        // when the slot looks free — otherwise editing an in-flight workflow from
+        // action() to awaitSignal() would quietly consume the retry wait-signal
+        // instead of reporting a broken history contract.
+        $this->rejectAction($flowRunId, $sequence, $requested);
+
         $signal = $this->signalRepository->find($flowRunId, $sequence);
 
         if ($signal !== null) {
@@ -121,9 +131,6 @@ final readonly class HistoryContractGuard
             return $signal;
         }
 
-        $requested = "signal '{$name}'";
-
-        $this->rejectAction($flowRunId, $sequence, $requested);
         $this->rejectSideEffect($flowRunId, $sequence, $requested);
         $this->rejectChild($flowRunId, $sequence, $requested);
 
