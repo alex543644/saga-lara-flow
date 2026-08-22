@@ -264,8 +264,12 @@ class ActionBuilder
             } catch (Throwable $exception) {
                 // A step with a retry policy is resolved solely on replay: only the
                 // seam knows the only-filter and the budget. Replay so it sees the
-                // Failed row and decides whether to park or to give up.
-                if ($this->retrySignal !== null) {
+                // Failed row and decides whether to park or to give up — but only
+                // when the row really did fail. A throw from before that (a listener,
+                // an observer, an action class that will not resolve) leaves nothing
+                // for the seam to read, and replaying would suspend a sync run on a
+                // job that does not exist.
+                if ($this->retrySignal !== null && $this->recordedFailure($flowRun->id, $sequence)) {
                     $suspender->suspendInline('action', $sequence);
                 }
 
@@ -817,6 +821,15 @@ class ActionBuilder
      * (looked up by its (flow_run_id, sequence) identity) as OptionalFailed so the
      * replay resolves the fallback instead of a business error.
      */
+    /**
+     * Whether the step at this ordinal is recorded as Failed — the state the seam
+     * needs to decide anything. A missing row counts as no failure.
+     */
+    private function recordedFailure(string $flowRunId, int $sequence): bool
+    {
+        return app(ActionRunRepository::class)->find($flowRunId, $sequence)?->status === ActionStatus::Failed;
+    }
+
     private function markOptionalFailed(string $flowRunId, int $sequence): void
     {
         $step = app(ActionRunRepository::class)->find($flowRunId, $sequence);

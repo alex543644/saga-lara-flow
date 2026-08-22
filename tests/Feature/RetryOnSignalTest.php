@@ -5,6 +5,7 @@ use DiscoveryUkraine\SagaLaraFlow\Enums\FlowEventType;
 use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\RunMode;
 use DiscoveryUkraine\SagaLaraFlow\Enums\SignalStatus;
+use DiscoveryUkraine\SagaLaraFlow\Events\ActionStarted;
 use DiscoveryUkraine\SagaLaraFlow\Facades\SagaFlow;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\FlowExecutor;
@@ -12,6 +13,7 @@ use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\CompensationLog;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\FlakyPaymentAction;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\OneActionWorkflow;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\RetryOnSignalWorkflow;
+use Illuminate\Support\Facades\Event;
 
 /**
  * Sync-mode coverage for retryOnSignal(). Waking the run on delivery is switched
@@ -228,4 +230,30 @@ it('rejects a negative configured retry budget', function () {
 
     expect($run->status)->toBe(FlowStatus::Failed)
         ->and($run->exception['message'] ?? '')->toContain('actions.retry_on_signal.max_retries');
+});
+
+it('surfaces a failure that happened before the step could be recorded as failed', function () {
+    FlakyPaymentAction::reset(failures: 0);
+
+    // A listener (or an observer, or an action class that will not resolve) throws
+    // before failAction() ever runs, so there is no Failed row for the seam to read.
+    Event::listen(ActionStarted::class, function (ActionStarted $event): void {
+        if ($event->actionRun->action_class === FlakyPaymentAction::class) {
+            throw new RuntimeException('listener blew up before the step could fail');
+        }
+    });
+
+    $run = SagaFlow::create(RetryOnSignalWorkflow::class)
+        ->withArguments('order-inline')
+        ->runSync();
+
+    // Without the guard the seam replayed a step that never reached Failed, and a
+    // sync run suspended on a job that does not exist: waiting for ever, no signal
+    // to wake it, and the real error swallowed.
+    expect($run->status)->toBe(FlowStatus::Failed)
+        ->and($run->exception['class'] ?? null)->toBe(RuntimeException::class)
+        ->and($run->signals()->count())->toBe(0);
+
+    // And it rolls back the way it would have without any retry policy.
+    expect(CompensationLog::all())->toBe(['undo:created']);
 });
