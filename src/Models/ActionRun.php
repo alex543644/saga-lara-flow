@@ -18,11 +18,15 @@ use Illuminate\Support\Carbon;
  * @property ActionStatus $status
  * @property bool $continue_on_failure
  * @property bool $has_compensation
+ * @property ?string $retry_signal
+ * @property int $retry_signal_attempts
+ * @property ?int $retry_signal_max_attempts
  * @property ?int $parallel_group
  * @property ?array<int|string, mixed> $arguments
  * @property ?array<int|string, mixed> $result
  * @property ?array<int|string, mixed> $exception
  * @property int $attempts
+ * @property bool $queue_attempts_exhausted
  * @property ?Carbon $started_at
  * @property ?Carbon $finished_at
  * @property ?Carbon $expires_at
@@ -46,11 +50,14 @@ class ActionRun extends Model
             'status' => ActionStatus::class,
             'continue_on_failure' => 'boolean',
             'has_compensation' => 'boolean',
+            'retry_signal_attempts' => 'integer',
+            'retry_signal_max_attempts' => 'integer',
             'parallel_group' => 'integer',
             'arguments' => 'array',
             'result' => 'array',
             'exception' => 'array',
             'attempts' => 'integer',
+            'queue_attempts_exhausted' => 'boolean',
             'started_at' => 'datetime',
             'finished_at' => 'datetime',
             'expires_at' => 'datetime',

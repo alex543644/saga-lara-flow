@@ -12,7 +12,9 @@ use DiscoveryUkraine\SagaLaraFlow\Models\FlowSignal;
  * Delivers an external signal into a run and wakes it. If the run is parked on a
  * matching awaitSignal, the open wait-signal is fulfilled in place; otherwise the
  * signal is stored as a floating Received row for a future awaitSignal to consume
- * (FIFO). Terminal runs reject signals.
+ * (FIFO). Delivery runs outside the queue and holds no lock, so filling a signal is
+ * a conditional write that falls back to the floating row when it loses.
+ * Terminal runs reject signals.
  */
 readonly class SignalDispatcher
 {
@@ -34,9 +36,14 @@ readonly class SignalDispatcher
 
         $waitingSignal = $this->repository->earliestWaiting($flowRun->id, $name);
 
-        $signal = $waitingSignal !== null
-            ? $this->recorder->fulfilWaitingSignal($waitingSignal, $payload)
-            : $this->recorder->storeReceivedSignal($flowRun, $name, $payload);
+        $signal = $waitingSignal === null
+            ? null
+            : $this->recorder->fulfilWaitingSignal($waitingSignal, $payload);
+
+        // No open wait-signal, or the one we found was claimed by a retry seam while
+        // we were writing: keep the delivery as a floating Received row rather than
+        // attaching it to a spent signal, where nothing would look for it again.
+        $signal ??= $this->recorder->storeReceivedSignal($flowRun, $name, $payload);
 
         if (config('saga-lara-flow.signals.wake_workflow_on_signal')) {
             $this->wake($flowRun);

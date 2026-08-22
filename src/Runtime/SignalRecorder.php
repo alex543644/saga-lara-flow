@@ -28,7 +28,7 @@ final readonly class SignalRecorder
      * the suspension and the signal row itself is visible via FlowRun::signals().
      *
      * A non-null $timeoutAt persists the awaitSignal(timeout:) / timeoutAfter()
-     * deadline so the monitor can later time the wait-marker out.
+     * deadline so the monitor can later time the wait-signal out.
      */
     public function recordSignalWaiting(
         FlowRun $flowRun,
@@ -92,14 +92,23 @@ final readonly class SignalRecorder
      * flip it to Received, keeping its wait_sequence so the parked awaitSignal can
      * resolve it on replay.
      *
+     * The flip is conditional: delivery holds no lock, so a retry seam may have
+     * claimed the signal since it was read. Returns null then — the signal is spent,
+     * and the caller stores this delivery as a floating one instead.
+     *
      * @param  array<int|string, mixed>  $payload
      */
-    public function fulfilWaitingSignal(FlowSignal $signal, array $payload): FlowSignal
+    public function fulfilWaitingSignal(FlowSignal $signal, array $payload): ?FlowSignal
     {
-        $signal->payload = $payload;
-        $signal->status = SignalStatus::Received;
-        $signal->received_at = Carbon::now();
-        $signal->save();
+        $claimed = $this->claimWaiting($signal, [
+            'payload' => $payload,
+            'status' => SignalStatus::Received,
+            'received_at' => Carbon::now(),
+        ]);
+
+        if (! $claimed) {
+            return null;
+        }
 
         $this->emitSignalReceived($signal->flowRun, $signal);
 
@@ -128,14 +137,50 @@ final readonly class SignalRecorder
     }
 
     /**
-     * Time out a still-Waiting wait-marker (monitor): flip it to TimedOut and
+     * Consume a wait-signal for this sequence, but only while it is still Waiting.
+     * Returns false when a delivery landed in it since the caller read it: that
+     * delivery is real, and taking it here too would turn two signals into one.
+     *
+     * This closes a signal that received nothing itself — the delivery that ended its
+     * wait arrived as a separate floating row — so the history row is appended but no
+     * FlowSignalConsumed is dispatched. The row carrying the payload dispatches it,
+     * once, so a listener counting consumptions sees one per delivered signal.
+     */
+    public function consumeWhileWaiting(FlowRun $flowRun, FlowSignal $signal, int $sequence): bool
+    {
+        $claimed = $this->claimWaiting($signal, [
+            'status' => SignalStatus::Consumed,
+            'wait_sequence' => $sequence,
+            'consumed_at' => Carbon::now(),
+        ]);
+
+        if (! $claimed) {
+            return false;
+        }
+
+        $this->events->record($flowRun, FlowEventType::SignalConsumed, $sequence, $signal, [
+            'name' => $signal->name,
+            'superseded' => true,
+        ]);
+
+        return true;
+    }
+
+    /**
+     * Time out a still-Waiting wait-signal (monitor): flip it to TimedOut and
      * append a signal.timed_out event. On replay the parked awaitSignal resolves it
      * by throwing AwaitSignalTimeoutException. No Laravel event is dispatched.
+     *
+     * Conditional for the same reason delivery is: the monitor writes a batch one row
+     * at a time, so a delivery can land in one between the read and this write, and
+     * calling that acknowledged signal a timeout would roll a saga back. Returns false
+     * when the row has moved on, so the monitor neither counts it nor wakes the run.
      */
-    public function timeoutSignal(FlowSignal $signal): void
+    public function timeoutSignal(FlowSignal $signal): bool
     {
-        $signal->status = SignalStatus::TimedOut;
-        $signal->save();
+        if (! $this->claimWaiting($signal, ['status' => SignalStatus::TimedOut])) {
+            return false;
+        }
 
         $this->events->record(
             $signal->flowRun,
@@ -144,6 +189,43 @@ final readonly class SignalRecorder
             $signal,
             ['name' => $signal->name],
         );
+
+        return true;
+    }
+
+    /**
+     * Move a wait-signal out of Waiting in a single conditional write, and sync the
+     * in-memory model to match when it lands. Returns false when the row is no longer
+     * Waiting: someone else moved it first and this caller must not write over them.
+     *
+     * The condition lives in the UPDATE itself: it is the only form every supported
+     * driver enforces atomically, since lockForUpdate() compiles to nothing on SQLite.
+     * The price is that these transitions raise no Eloquent model events, so an
+     * observer on a swapped-in models.flow_signal will not see them; flow_events and
+     * the package's own Laravel events still record every one.
+     *
+     * The model is re-read rather than filled from the values just written: those are
+     * already database-ready, and pushing an encoded JSON payload back through the
+     * casts would encode it twice.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function claimWaiting(FlowSignal $signal, array $values): bool
+    {
+        $attributes = $signal->newInstance()->forceFill($values)->getAttributes();
+
+        $claimed = $signal->newQuery()
+            ->whereKey($signal->getKey())
+            ->where('status', SignalStatus::Waiting)
+            ->update($attributes) === 1;
+
+        if (! $claimed) {
+            return false;
+        }
+
+        $signal->refresh();
+
+        return true;
     }
 
     private function emitSignalReceived(FlowRun $flowRun, FlowSignal $signal): void

@@ -158,6 +158,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Actions
+    |--------------------------------------------------------------------------
+    | retryOnSignal() parks a failed step until a named signal arrives, then
+    | retries that step alone. max_retries caps how many signal-gated retries a
+    | step may spend when the call site does not pass its own maxRetries; null
+    | leaves it unbounded, with the per-wait timeout and the run's expires_at as
+    | the remaining brakes. A value set on the call site always wins.
+    */
+    'actions' => [
+        'retry_on_signal' => [
+            'max_retries' => null,
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Parallel actions
     |--------------------------------------------------------------------------
     | Default policy for a parallel() block when a step fails. FailFast cancels

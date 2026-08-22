@@ -8,6 +8,7 @@ enum ActionStatus: string
     case Running = 'running';
     case Completed = 'completed';
     case Failed = 'failed';
+    case AwaitingRetry = 'awaiting_retry';
     case OptionalFailed = 'optional_failed';
     case Expired = 'expired';
     case Cancelled = 'cancelled';

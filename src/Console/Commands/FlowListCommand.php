@@ -2,11 +2,14 @@
 
 namespace DiscoveryUkraine\SagaLaraFlow\Console\Commands;
 
+use DiscoveryUkraine\SagaLaraFlow\Enums\ActionStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\FlowManager;
+use DiscoveryUkraine\SagaLaraFlow\Models\ActionRun;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowTag;
 use Illuminate\Console\Command;
+use Illuminate\Support\Collection;
 
 /**
  * Lists flow runs with optional filters, newest first — a thin CLI over
@@ -59,18 +62,64 @@ class FlowListCommand extends Command
             return self::SUCCESS;
         }
 
+        $parked = $this->retrySignalsByRun($runs);
+
         $this->table(
             ['ID', 'Workflow', 'Status', 'Created', 'Tags'],
             $runs->map(fn (FlowRun $run): array => [
                 $run->id,
                 class_basename($run->workflow_class),
-                $run->status->value,
+                $this->formatStatus($run, $parked),
                 (string) $run->created_at,
                 $this->formatTags($run),
             ])->all(),
         );
 
         return self::SUCCESS;
+    }
+
+    /**
+     * The signals the listed runs are parked on, keyed by run id. A run parked by
+     * retryOnSignal() is plainly Waiting like any other, so without this the signal
+     * that would unblock it is invisible until the operator opens the run. One query
+     * for the whole page.
+     *
+     * @param  Collection<int, FlowRun>  $runs
+     * @return Collection<string, string>
+     */
+    private function retrySignalsByRun(Collection $runs): Collection
+    {
+        /** @var class-string<ActionRun> $model */
+        $model = config('saga-lara-flow.models.action_run');
+
+        return $model::query()
+            ->whereIn('flow_run_id', $runs->pluck('id')->all())
+            ->where('status', ActionStatus::AwaitingRetry)
+            ->whereNotNull('retry_signal')
+            ->get(['flow_run_id', 'retry_signal'])
+            ->groupBy('flow_run_id')
+            ->map(fn (Collection $steps): string => $steps
+                ->pluck('retry_signal')
+                ->unique()
+                ->implode(', '));
+    }
+
+    /**
+     * The status cell, with the signal a parked run waits on appended to it.
+     *
+     * Only a Waiting run is annotated: a step keeps its AwaitingRetry status after the
+     * run around it is cancelled, and naming a signal there would send the operator
+     * after a delivery a terminal run refuses.
+     *
+     * @param  Collection<string, string>  $parked
+     */
+    private function formatStatus(FlowRun $run, Collection $parked): string
+    {
+        $signals = $run->status === FlowStatus::Waiting ? $parked->get($run->id) : null;
+
+        return $signals === null
+            ? $run->status->value
+            : "{$run->status->value} (retry: {$signals})";
     }
 
     private function formatTags(FlowRun $run): string

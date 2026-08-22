@@ -18,6 +18,8 @@ enum FlowEventType: string
     case ActionStarted = 'action.started';
     case ActionCompleted = 'action.completed';
     case ActionFailed = 'action.failed';
+    case ActionAwaitingRetry = 'action.awaiting_retry';
+    case ActionRetried = 'action.retried';
     case ActionOptionalFailed = 'action.optional_failed';
     case ActionExpired = 'action.expired';
     case ActionRedispatched = 'action.redispatched';

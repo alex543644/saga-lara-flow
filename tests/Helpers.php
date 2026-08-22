@@ -66,8 +66,12 @@ if (! function_exists('useDatabaseQueue')) {
 
     function drainQueue(): void
     {
+        // --sleep=0 matters more than it looks: Worker::daemon() sleeps BEFORE it
+        // checks stopWhenEmpty, so every drain would otherwise pay the default three
+        // seconds after the queue is already empty.
         Artisan::call('queue:work', [
             '--stop-when-empty' => true,
+            '--sleep' => 0,
             '--no-interaction' => true,
         ]);
     }

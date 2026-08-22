@@ -26,7 +26,22 @@ class TestCase extends Orchestra
 
     protected function defineDatabaseMigrations(): void
     {
-        $migration = include __DIR__.'/../database/migrations/2026_07_02_000000_create_saga_lara_flow_initial_tables.php';
-        $migration->up();
+        // Every shipped migration, in filename order — the package now ships more
+        // than one, and a suite that only ran the first would be missing columns.
+        foreach ($this->packageMigrations() as $path) {
+            (include $path)->up();
+        }
+    }
+
+    /**
+     * @return list<string>
+     */
+    protected function packageMigrations(): array
+    {
+        $paths = glob(__DIR__.'/../database/migrations/*.php') ?: [];
+
+        sort($paths);
+
+        return array_values($paths);
     }
 }

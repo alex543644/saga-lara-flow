@@ -7,9 +7,11 @@ use DiscoveryUkraine\SagaLaraFlow\Concerns\NormalizesExceptions;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\Serializer;
 use DiscoveryUkraine\SagaLaraFlow\Enums\ActionStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\FlowEventType;
+use DiscoveryUkraine\SagaLaraFlow\Events\ActionAwaitingRetry;
 use DiscoveryUkraine\SagaLaraFlow\Events\ActionCompleted;
 use DiscoveryUkraine\SagaLaraFlow\Events\ActionFailed;
 use DiscoveryUkraine\SagaLaraFlow\Events\ActionRedispatched;
+use DiscoveryUkraine\SagaLaraFlow\Events\ActionRetried;
 use DiscoveryUkraine\SagaLaraFlow\Events\ActionStarted;
 use DiscoveryUkraine\SagaLaraFlow\Events\OptionalActionFailed;
 use DiscoveryUkraine\SagaLaraFlow\Models\ActionRun;
@@ -47,6 +49,8 @@ final readonly class ActionRecorder
         ?int $parallelGroup = null,
         ?DateTimeInterface $expiresAt = null,
         ?string $actionName = null,
+        ?string $retrySignal = null,
+        ?int $retrySignalMaxAttempts = null,
     ): ActionRun {
         /** @var class-string<ActionRun> $model */
         $model = config('saga-lara-flow.models.action_run');
@@ -65,6 +69,10 @@ final readonly class ActionRecorder
             'expires_at' => $expiresAt ?? $this->defaultExpiry(),
             'arguments' => $this->serializer->serialize($arguments),
             'attempts' => 0,
+            'queue_attempts_exhausted' => false,
+            'retry_signal' => $retrySignal,
+            'retry_signal_attempts' => 0,
+            'retry_signal_max_attempts' => $retrySignalMaxAttempts,
         ]);
 
         $actionRun->save();
@@ -177,6 +185,109 @@ final readonly class ActionRecorder
         );
 
         event(new OptionalActionFailed($actionRun));
+    }
+
+    /**
+     * Record that the queue has finished retrying this step's current job, from the
+     * one place that knows: Laravel's own failure hook. The retry seam reads this
+     * instead of comparing the attempts counter with the action's $tries, which lives
+     * in code and can change under a job already in flight. No event is appended —
+     * this is queue bookkeeping, not a step in the flow's history.
+     */
+    public function markQueueAttemptsExhausted(ActionRun $actionRun): void
+    {
+        if ($actionRun->queue_attempts_exhausted) {
+            return;
+        }
+
+        $actionRun->queue_attempts_exhausted = true;
+        $actionRun->save();
+    }
+
+    /**
+     * Close a parked step that has given up: put it back into the Failed state the
+     * retry policy deferred, keeping the exception and finished_at of the attempt that
+     * failed. No event is appended — action.failed was recorded back then, and the
+     * give-up is visible from the flow's own failure and the timed-out wait-signal.
+     */
+    public function settleAwaitingRetry(ActionRun $actionRun): void
+    {
+        if ($actionRun->status !== ActionStatus::AwaitingRetry) {
+            return;
+        }
+
+        $actionRun->status = ActionStatus::Failed;
+        $actionRun->save();
+    }
+
+    /**
+     * Park a failed step on its retry signal: flip it to AwaitingRetry and append an
+     * action.awaiting_retry event. The step is NOT terminal — the recorded exception
+     * and finished_at of the last attempt are kept so the seam can decide again once
+     * the signal arrives (or the wait-signal times out).
+     */
+    public function awaitRetry(ActionRun $actionRun, string $signal, ?int $maxAttempts = null): void
+    {
+        $actionRun->status = ActionStatus::AwaitingRetry;
+        $actionRun->retry_signal = $signal;
+
+        // A row scheduled without a policy adopts one here, and the cap has to be
+        // written with the signal: from this parking on the budget is read off the
+        // row, so an empty column would silently mean unbounded.
+        $actionRun->retry_signal_max_attempts ??= $maxAttempts;
+
+        $actionRun->save();
+
+        $this->events->record(
+            $actionRun->flowRun,
+            FlowEventType::ActionAwaitingRetry,
+            $actionRun->sequence,
+            $actionRun,
+            [
+                'signal' => $signal,
+                'retry_signal_attempts' => $actionRun->retry_signal_attempts,
+                'retry_signal_max_attempts' => $actionRun->retry_signal_max_attempts,
+            ]
+        );
+
+        event(new ActionAwaitingRetry($actionRun, $signal));
+    }
+
+    /**
+     * Start another signal-gated retry cycle: spend one unit of the budget and rewind
+     * the row to Pending so the very same (flow_run_id, sequence) ordinal runs again.
+     * `attempts` is deliberately untouched — it counts queue attempts within one
+     * execution — and the previous exception stands until the new attempt overwrites it.
+     */
+    public function retryAction(ActionRun $actionRun, ?DateTimeInterface $expiresAt = null): void
+    {
+        $actionRun->retry_signal_attempts = $actionRun->retry_signal_attempts + 1;
+        $actionRun->status = ActionStatus::Pending;
+        $actionRun->started_at = null;
+        $actionRun->finished_at = null;
+
+        // A fresh job means a fresh native-attempt allowance: the queue has not given
+        // up on this cycle yet, whatever it did to the previous one.
+        $actionRun->queue_attempts_exhausted = false;
+
+        $deadline = $expiresAt ?? $this->defaultExpiry();
+
+        $actionRun->expires_at = $deadline === null ? null : Carbon::instance($deadline);
+        $actionRun->save();
+
+        $this->events->record(
+            $actionRun->flowRun,
+            FlowEventType::ActionRetried,
+            $actionRun->sequence,
+            $actionRun,
+            [
+                'signal' => $actionRun->retry_signal,
+                'retry_signal_attempts' => $actionRun->retry_signal_attempts,
+                'retry_signal_max_attempts' => $actionRun->retry_signal_max_attempts,
+            ]
+        );
+
+        event(new ActionRetried($actionRun));
     }
 
     /**
