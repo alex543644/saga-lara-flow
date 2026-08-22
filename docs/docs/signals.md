@@ -80,6 +80,13 @@ non-terminal run — `Pending`, `Running`, or `Waiting` — and a flow parked on
 **`Waiting`**, not `Running`. Filtering by `running()` would silently miss exactly the run you are
 trying to wake.
 
+## Reviving a failed step
+
+A signal can also restart a step that already failed, instead of being awaited at a point in
+`handle()`. `->retryOnSignal('balance-refilled')` on an action parks it when it fails and re-runs it
+when that signal is delivered — using the same delivery API as everything above. See
+[Retry on signal](./retry-on-signal.md).
+
 You can also deliver from the CLI — see [Artisan commands](./artisan-commands.md):
 
 ```bash

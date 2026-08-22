@@ -1,7 +1,7 @@
 ---
 id: expiration-and-monitoring
 title: Expiration & monitoring
-sidebar_position: 13
+sidebar_position: 14
 ---
 
 # Expiration & monitoring
@@ -25,6 +25,10 @@ All three values are **in seconds** (here: 1 hour for a run, 10 minutes for an a
 signal wait). They are applied at write time when no explicit deadline is set: `run` on create,
 `action` on schedule, `signal` on await. `null` = off (no implicit deadline). There is no per-entity
 opt-out flag; to bypass a default for one entity, pass an explicit (far-future) deadline.
+
+The `signal` default also bounds a [retry-on-signal](./retry-on-signal.md) wait when the call site
+passes no `waitSeconds:`. A step's own `action` deadline does not: an action deadline bounds
+*execution*, and a parked step is not executing.
 
 ## Driving the sweep
 
@@ -89,6 +93,13 @@ Every parameter:
 
 The doctor only ever re-dispatches existing jobs or re-wakes flows — replay decides the rest, so it
 never creates duplicate work or mutates a business result.
+
+:::tip Turn it on in production
+Any step whose job is committed and then dispatched can lose that job to a dying process — including
+a step restarted by [retry on signal](./retry-on-signal.md), which then sits `Pending` with nothing
+behind it. `redispatch_lost_actions` is exactly the recovery for that, and it does nothing until
+`repair.enabled` is `true`.
+:::
 
 Schedule it, or loop it off the worker (`repair.queue_looping.enabled`):
 

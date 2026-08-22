@@ -1,7 +1,7 @@
 ---
 id: child-workflows
 title: Child workflows
-sidebar_position: 11
+sidebar_position: 12
 ---
 
 # Child workflows

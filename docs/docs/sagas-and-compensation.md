@@ -74,3 +74,10 @@ You can trigger a rollback from outside the workflow through the handle:
 ```php
 SagaFlow::loadFlow($runId)->compensate(); // roll back completed steps, then cancel
 ```
+
+## Postponing a rollback
+
+Not every failure deserves a rollback. When a step failed only because the world was not ready — a
+declined card, a service still provisioning — `retryOnSignal()` parks that step and waits instead of
+compensating, and re-runs it alone when the signal arrives. Compensation happens only if the retry
+policy eventually gives up. See [Retry on signal](./retry-on-signal.md).

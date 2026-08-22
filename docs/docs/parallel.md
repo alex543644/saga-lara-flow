@@ -1,7 +1,7 @@
 ---
 id: parallel
 title: Parallel actions
-sidebar_position: 9
+sidebar_position: 10
 ---
 
 # Parallel actions

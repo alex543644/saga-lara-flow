@@ -1,7 +1,7 @@
 ---
 id: side-effects
 title: Side effects
-sidebar_position: 8
+sidebar_position: 9
 ---
 
 # Side effects
