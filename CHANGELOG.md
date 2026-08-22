@@ -2,6 +2,94 @@
 
 All notable changes to `saga-lara-flow` will be documented in this file.
 
+## v1.1.0 - 2026-08-22
+
+> ### ⚠️ Run `php artisan migrate` immediately after upgrading
+
+This release adds a migration, and it is **not optional**. Every action the engine schedules —
+with or without a retry policy — writes the new columns. An application that upgrades the package
+without running its migrations will break **ordinary workflow execution** with an unknown-column
+error on the very next action it schedules.
+
+```bash
+composer update discovery-ukraine/saga-lara-flow
+php artisan migrate
+
+```
+Deploy the two together. See [UPGRADING.md](https://github.com/discovery-ukraine/saga-lara-flow/blob/main/UPGRADING.md).
+
+#### Added: retry a failed saga step on a signal (#9)
+
+A failing step used to take the whole run with it — the saga rolled back and completed work was
+undone. That is right for a bug, wrong for a step that failed because the world was not ready yet: a
+declined card, a service still provisioning. `retryOnSignal()` parks such a step instead, and an
+external signal re-runs **that step alone**.
+
+```php
+$this->action(ChargeCard::class, $orderId)
+    ->compensateWith(RefundCard::class, $orderId)
+    ->retryOnSignal(
+        'balance-refilled',
+        maxRetries: 3,                                // null = unbounded
+        waitSeconds: 86400,                           // how long one wait may last
+        only: [InsufficientBalanceException::class],  // null = park on any exception
+    )
+    ->run();
+
+```
+Deliver `balance-refilled` the way you deliver any other signal and `ChargeCard` runs again, alone;
+earlier steps stay completed and un-compensated. `saga()->step()` mirrors the method.
+
+The failure layers stack: Laravel's `$tries` first, then `retryOnSignal()`, then
+`continueOnFailure()`, then hard failure and compensation. When the budget is spent or the wait times
+out, the step fails exactly as it would have without the policy — same `ActionFailedException`
+carrying the last attempt's message, same rollback. There is no new exception class to catch.
+
+A retry consumes **no new sequence**: the step reuses its own ordinal and `action_runs` row, and the
+waiting consumes no ordinal at all, so downstream steps land identically whether it retried or not.
+
+**Operator surface.** `saga-flow:show` gains a **Retry** column (signal, spent budget, live wait
+deadline); `saga-flow:list` annotates a parked run with the signal it needs. Two new events,
+`ActionAwaitingRetry` and `ActionRetried`.
+
+See the [Retry on signal](https://sagalaraflow.dev/retry-on-signal) guide.
+
+#### Added: batch `tags()` inside a workflow (#8)
+
+Tagging from inside `handle()` only allowed one key at a time, while the same concept already had a
+bulk form at creation (`->withTags([...])`) and declaratively (repeatable `#[Tag]`). Both `tag()` and
+`tags()` are now fluent:
+
+```php
+$this->tags([
+    'priority' => 'high',
+    'attempt'  => 2,      // int values are cast to string
+    'orders'   => null,   // a tag with no value
+]);
+
+```
+#### Behaviour changes
+
+Two, both detailed in [UPGRADING.md](https://github.com/discovery-ukraine/saga-lara-flow/blob/main/UPGRADING.md):
+
+- **`SignalRepository` gained two methods** (`earliestPendingSince`, `latestForSequence`). Shipped as
+  a minor because the repository contracts are not a public extension point — they are now marked
+  `@internal`, and `config('saga-lara-flow.models.*')` remains the supported swap point.
+- **Delivering into an open wait, and timing a wait out, no longer raise Eloquent model events.**
+  Both are now single conditional `UPDATE`s — the only form that is atomic on every supported driver
+  (`lockForUpdate()` compiles to nothing on SQLite), and what stops a delivery and a timeout from
+  both claiming the same wait. An observer on a swapped-in `models.flow_signal` no longer sees them;
+  `flow_events` and the package's own Laravel events still record every transition.
+
+#### Recommended
+
+- **Turn `repair.enabled` on in production.** The doctor is what recovers a step whose queue job was
+  lost to a dying process. It is off by default.
+- **Check your package-event listeners.** A synchronous listener that throws interrupts the engine's
+  replay and can fail a healthy run. Mark them `ShouldQueue`, or make sure they cannot throw.
+
+**Full Changelog**: https://github.com/discovery-ukraine/saga-lara-flow/compare/v1.0.5...v1.1.0
+
 ## v1.0.5 - 2026-07-05
 
 ### Added
@@ -120,8 +208,8 @@ composer require discovery-ukraine/saga-lara-flow
 php artisan vendor:publish --tag="saga-lara-flow-migrations"
 php artisan migrate
 
-```
 
+```
 ### Links
 
 - Documentation: https://sagalaraflow.dev
