@@ -55,6 +55,11 @@ alone; if it succeeds, the workflow continues to `ShipOrder` as if nothing had h
 - **`$only`** — a list of exception classes that may trigger a park. Subclasses count. Anything else
   fails the step normally, so a `TypeError` never parks a saga for a day.
 
+`maxRetries` and `waitSeconds` must be zero or greater — `null`, not a negative number, is how you
+say "no limit". A negative value raises an `InvalidArgumentException` rather than reaching the
+database, where it would be an error on MySQL and a step that silently never parks elsewhere. The
+same applies to the configured `actions.retry_on_signal.max_retries`.
+
 ```php
 $this->action(ChargeCard::class, $orderId)
     ->compensateWith(RefundCard::class, $orderId)

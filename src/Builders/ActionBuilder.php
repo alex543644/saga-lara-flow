@@ -28,6 +28,7 @@ use DiscoveryUkraine\SagaLaraFlow\Runtime\SignalRecorder;
 use DiscoveryUkraine\SagaLaraFlow\Support\AttributeReader;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Facades\DB;
+use InvalidArgumentException;
 use Throwable;
 
 /**
@@ -169,6 +170,9 @@ class ActionBuilder
         ?int $waitSeconds = null,
         ?array $only = null,
     ): static {
+        $this->rejectNegative('maxRetries', $maxRetries);
+        $this->rejectNegative('waitSeconds', $waitSeconds);
+
         $this->retrySignal = $signal;
         $this->retryMaxRetries = $maxRetries;
         $this->retryWaitSeconds = $waitSeconds;
@@ -761,7 +765,28 @@ class ActionBuilder
 
         $configured = config('saga-lara-flow.actions.retry_on_signal.max_retries');
 
-        return $configured === null ? null : (int) $configured;
+        if ($configured === null) {
+            return null;
+        }
+
+        $this->rejectNegative('actions.retry_on_signal.max_retries', (int) $configured);
+
+        return (int) $configured;
+    }
+
+    /**
+     * Reject a negative budget or wait before it can be persisted. The columns are
+     * unsigned, so a negative value means an error on MySQL and a step that silently
+     * never parks on the drivers that store it; failing here says which value is
+     * wrong, the same way on every driver.
+     */
+    private function rejectNegative(string $name, ?int $value): void
+    {
+        if ($value !== null && $value < 0) {
+            throw new InvalidArgumentException(
+                "retryOnSignal() {$name} must be zero or greater, got {$value}.",
+            );
+        }
     }
 
     /**

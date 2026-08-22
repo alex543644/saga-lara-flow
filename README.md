@@ -376,7 +376,7 @@ $this->action(ChargeCard::class, $orderId)
     ->compensateWith(RefundCard::class, $orderId)
     ->retryOnSignal(
         'balance-refilled',
-        maxRetries: 3,                                  // null = unbounded
+        maxRetries: 3,                                  // null = unbounded, never negative
         waitSeconds: 86400,                             // how long one wait may last
         only: [InsufficientBalanceException::class],    // null = park on any exception
     )

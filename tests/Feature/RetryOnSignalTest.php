@@ -194,3 +194,38 @@ it('writes a retry ceiling only for a step that carries the policy', function ()
     expect($charged->status)->toBe(ActionStatus::AwaitingRetry)
         ->and($charged->retry_signal_max_attempts)->toBe(2);
 });
+
+it('rejects a negative retry budget or wait', function () {
+    // Both columns are unsigned: a negative value is a MySQL error and a step that
+    // silently never parks elsewhere. The seam refuses it up front instead, so the
+    // run fails the same way on every driver, naming the value that is wrong.
+    $budget = SagaFlow::create(RetryOnSignalWorkflow::class)
+        ->withArguments('order-neg', -1)
+        ->runSync();
+
+    expect($budget->status)->toBe(FlowStatus::Failed)
+        ->and($budget->exception['class'] ?? null)->toBe(InvalidArgumentException::class)
+        ->and($budget->exception['message'] ?? '')->toContain('maxRetries must be zero or greater');
+
+    $wait = SagaFlow::create(RetryOnSignalWorkflow::class)
+        ->withArguments('order-neg-wait', null, null, -30)
+        ->runSync();
+
+    expect($wait->status)->toBe(FlowStatus::Failed)
+        ->and($wait->exception['message'] ?? '')->toContain('waitSeconds must be zero or greater');
+
+    // Refused before anything was scheduled, so no step carries a negative ceiling.
+    expect($budget->actions()->whereNotNull('retry_signal_max_attempts')->count())->toBe(0);
+});
+
+it('rejects a negative configured retry budget', function () {
+    config()->set('saga-lara-flow.actions.retry_on_signal.max_retries', -5);
+    FlakyPaymentAction::reset(failures: 99);
+
+    $run = SagaFlow::create(RetryOnSignalWorkflow::class)
+        ->withArguments('order-neg-config')
+        ->runSync();
+
+    expect($run->status)->toBe(FlowStatus::Failed)
+        ->and($run->exception['message'] ?? '')->toContain('actions.retry_on_signal.max_retries');
+});
