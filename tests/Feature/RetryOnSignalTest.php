@@ -10,6 +10,7 @@ use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\FlowExecutor;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\CompensationLog;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\FlakyPaymentAction;
+use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\OneActionWorkflow;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\RetryOnSignalWorkflow;
 
 /**
@@ -167,4 +168,29 @@ it('fails normally when the failure falls outside only', function () {
     // The completed step before it rolled back, exactly as it would have without
     // any retry policy in play.
     expect(CompensationLog::all())->toBe(['undo:created']);
+});
+
+it('writes a retry ceiling only for a step that carries the policy', function () {
+    config()->set('saga-lara-flow.actions.retry_on_signal.max_retries', 2);
+    FlakyPaymentAction::reset(failures: 99);
+
+    $plain = SagaFlow::create(OneActionWorkflow::class)->runSync();
+
+    // A configured cap describes the retry policy, not every action ever scheduled.
+    // Left on an ordinary row it becomes an unrelated number that awaitRetry()'s ??=
+    // would later keep in place of the ceiling the seam actually parked on.
+    $step = $plain->actions()->where('sequence', 0)->first();
+
+    expect($step->retry_signal)->toBeNull()
+        ->and($step->retry_signal_max_attempts)->toBeNull();
+
+    $parked = SagaFlow::create(RetryOnSignalWorkflow::class)
+        ->withArguments('order-cap')
+        ->runSync();
+
+    // The same default still reaches a step that does carry the policy.
+    $charged = $parked->actions()->where('sequence', 1)->first();
+
+    expect($charged->status)->toBe(ActionStatus::AwaitingRetry)
+        ->and($charged->retry_signal_max_attempts)->toBe(2);
 });

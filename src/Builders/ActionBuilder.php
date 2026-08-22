@@ -237,7 +237,11 @@ class ActionBuilder
         $continueOnFailure = $this->resolvedContinueOnFailure();
         $expiresAt = $this->resolvedExpiresAt();
         $actionName = $this->resolvedActionName();
-        $retrySignalMaxAttempts = $this->resolvedMaxRetries();
+        // Only a step that carries the policy gets a ceiling written. Storing the
+        // global default on every action would leave an unrelated number in the
+        // column, and awaitRetry()'s ??= would then keep it instead of the ceiling
+        // the seam actually parked on when a later deploy adds retryOnSignal().
+        $retrySignalMaxAttempts = $this->retrySignal === null ? null : $this->resolvedMaxRetries();
 
         if ($this->runtime->mode() === RunMode::Sync) {
             try {
