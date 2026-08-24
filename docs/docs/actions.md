@@ -50,6 +50,10 @@ $this->action(ChargeCard::class, $orderId)
 There is no `timeoutAfter()` on an action builder — that method belongs to
 [signals](./signals.md). Action deadlines use `expiresAt()`.
 
+Like every deadline in the package, this one is enforced by the expiration sweep rather than by a
+timer: a step passes its deadline only once `saga-flow:monitor` (or the opt-in queue-looping
+listener) notices. See [Expiration & monitoring](./expiration-and-monitoring.md).
+
 ## Handling failure
 
 `run()` throws when the action ultimately fails (after exhausting `$tries`), so the workflow can

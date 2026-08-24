@@ -40,6 +40,19 @@ try {
 
 `awaitSignal($name, $timeout)` accepts the timeout as an optional second argument as well.
 
+:::warning A deadline does not enforce itself
+
+The package has no durable timers. A deadline is a value stored on the wait; something has to
+*notice* that it passed. That something is the expiration sweep — either the scheduled
+`saga-flow:monitor` command or the opt-in queue-looping listener. Until a sweep runs, the wait stays
+open and `AwaitSignalTimeoutException` is never thrown, however long the deadline has been past.
+
+If you set no deadline and no `monitor.expiration.defaults.signal`, the wait is unbounded by design.
+
+See [Expiration & monitoring](./expiration-and-monitoring.md) for how to drive the sweep, and
+[Testing](./testing.md#testing-deadlines) for driving it from a test.
+:::
+
 ## Delivering a signal
 
 From anywhere in your app, deliver via the flow handle:
