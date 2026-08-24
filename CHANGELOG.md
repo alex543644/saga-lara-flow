@@ -2,6 +2,35 @@
 
 All notable changes to `saga-lara-flow` will be documented in this file.
 
+## v1.1.1 - 2026-08-24
+
+### Documentation: deadlines and the expiration sweep
+
+No engine changes and **no migration** — this release says out loud something the documentation only
+ever implied.
+
+Deadlines (`timeoutAfter()`, `expiresAt()`, `#[FlowTimeout]`, `monitor.expiration.defaults`) are
+enforced by the expiration sweep, not by timers. If neither `saga-flow:monitor` nor the
+queue-looping listener is running, **no deadline is ever enforced** — `queue:work` on its own does
+not check them, and neither does delivering a signal.
+
+- `signals.md` and `actions.md` now say so where the deadline APIs are introduced, instead of only
+  on the expiration page.
+- `installation.md` gained a **Schedule the monitor** step.
+- `testing.md` gained a **Testing deadlines** section: `travel()` alone changes nothing, and the
+  sweep only marks the wait — a second queue drain is needed before the workflow has replayed and
+  reacted.
+- `expiration-and-monitoring.md` gained **Deadlines are approximate**: because the sweep is the only
+  writer of "this deadline passed", a signal delivered after its deadline but before the next sweep
+  is still accepted.
+
+Two tests now cover that scenario so it cannot regress silently.
+
+Making deadlines strict — enforcing them inline, at the seams that already hold the row — is
+proposed as an opt-in for 1.2 in #19.
+
+Thanks to @alex543644 for reporting #17.
+
 ## v1.1.0 - 2026-08-22
 
 > ### ⚠️ Run `php artisan migrate` immediately after upgrading
@@ -14,6 +43,7 @@ error on the very next action it schedules.
 ```bash
 composer update discovery-ukraine/saga-lara-flow
 php artisan migrate
+
 
 ```
 Deploy the two together. See [UPGRADING.md](https://github.com/discovery-ukraine/saga-lara-flow/blob/main/UPGRADING.md).
@@ -35,6 +65,7 @@ $this->action(ChargeCard::class, $orderId)
         only: [InsufficientBalanceException::class],  // null = park on any exception
     )
     ->run();
+
 
 ```
 Deliver `balance-refilled` the way you deliver any other signal and `ChargeCard` runs again, alone;
@@ -66,6 +97,7 @@ $this->tags([
     'attempt'  => 2,      // int values are cast to string
     'orders'   => null,   // a tag with no value
 ]);
+
 
 ```
 #### Behaviour changes
@@ -207,6 +239,7 @@ fails partway through, registered compensations roll back the completed work in 
 composer require discovery-ukraine/saga-lara-flow
 php artisan vendor:publish --tag="saga-lara-flow-migrations"
 php artisan migrate
+
 
 
 ```
