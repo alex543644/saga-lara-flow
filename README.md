@@ -343,6 +343,11 @@ try {
 }
 ```
 
+A deadline does not enforce itself: the package has no durable timers, so an unanswered wait only
+times out once the expiration sweep notices — see
+[Expiration & monitoring](#expiration--monitoring) below. Until then the wait stays open, however
+long the deadline has been past.
+
 Deliver a signal from anywhere via the handle:
 
 ```php
@@ -527,6 +532,11 @@ Schedule::command('saga-flow:monitor')->everyMinute();
 **Queue looping (opt-in).** Drive the sweep off the queue worker's idle loop by enabling
 `monitor.queue_looping.enabled` (throttled by `throttle_seconds`). Useful when you have no cron but
 always-on workers.
+
+If neither is running, **no deadline is ever enforced** — `queue:work` alone does not check them.
+And because the sweep is the only writer of "this deadline passed", deadlines are approximate: a
+signal delivered after its deadline but before the next sweep is still accepted. Both points are
+expanded in [Expiration & monitoring](https://sagalaraflow.dev/expiration-and-monitoring).
 
 For runs whose progress was lost to a *dropped job* (rather than a deadline), the **doctor** can
 re-dispatch missing actions (`repair.redispatch_lost_actions`) and re-wake stuck waits

@@ -51,7 +51,28 @@ Drive the sweep off the queue worker's idle loop instead of cron:
 ```
 
 Useful when you have always-on workers but no scheduler. The sweep is throttled so it runs at most
-once per `throttle_seconds`.
+once per `throttle_seconds`. The listener is registered while the service provider boots, so the
+option has to be set in configuration — flipping it at runtime has no effect.
+
+**If neither is driving the sweep, no deadline in the package is ever enforced.** A run passes its
+`expiresAt`, a step passes its own, a signal wait passes its `timeoutAfter` — and nothing happens.
+`queue:work` on its own does not check deadlines, and neither does delivering a signal.
+
+## Deadlines are approximate
+
+The sweep is the only writer of "this deadline passed", which means a deadline is enforced no sooner
+than the next sweep. With `everyMinute()` that is a window of up to a minute; with queue looping it
+is up to `throttle_seconds`.
+
+The visible consequence: a signal delivered *after* its wait's deadline but *before* the next sweep
+is still accepted, and the workflow carries on as though the wait succeeded. Once the sweep has
+marked the wait `timed_out`, the same delivery arrives too late and the workflow sees
+`AwaitSignalTimeoutException` instead.
+
+This is deliberate. Keeping the sweep the single writer of a wait's status is what makes delivery,
+timeout and the retry seam safe to run concurrently. If your deadline is a hard business boundary
+rather than a safety net, enforce it in the workflow — the payload of a late signal can be checked
+against a deadline you captured with `sideEffect()`.
 
 ## Repair (the doctor)
 

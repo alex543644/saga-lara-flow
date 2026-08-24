@@ -44,6 +44,22 @@ try to run **both** the published copy and the package's own and fail with a dup
 Publishing the migration is not part of the install flow.
 :::
 
+## Schedule the monitor
+
+Optional, but required for any deadline to work. The package has no durable timers: `expiresAt()`,
+`timeoutAfter()`, `#[FlowTimeout]` and the `monitor.expiration.defaults` all store a deadline that
+something has to notice.
+
+```php
+use Illuminate\Support\Facades\Schedule;
+
+Schedule::command('saga-flow:monitor')->everyMinute();
+```
+
+Skip it and nothing breaks — deadlines simply never fire. See
+[Expiration & monitoring](./expiration-and-monitoring.md) for the queue-looping alternative and for
+the repair doctor.
+
 ## Requirements
 
 - **PHP `^8.5`**
