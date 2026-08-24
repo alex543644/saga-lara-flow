@@ -1,6 +1,11 @@
 # Path-based git attributes
 # https://www.kernel.org/pub/software/scm/git/docs/gitattributes.html
 
+# Normalize line endings: the index is LF, Pint enforces LF, and CI runs on
+# Linux. eol=lf overrides a contributor's core.autocrlf, so a checkout never
+# introduces CRLF and no one sees whole-file diffs that carry no changes.
+* text=auto eol=lf
+
 # Ignore all test and documentation with "export-ignore".
 /.github            export-ignore
 /.gitattributes     export-ignore
