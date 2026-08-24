@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - '**.php'
+      - '.gitattributes'
       - '.github/workflows/run-tests.yml'
       - 'phpunit.xml.dist'
       - 'composer.json'
@@ -11,6 +12,7 @@ on:
   pull_request:
     paths:
       - '**.php'
+      - '.gitattributes'
       - '.github/workflows/run-tests.yml'
       - 'phpunit.xml.dist'
       - 'composer.json'
