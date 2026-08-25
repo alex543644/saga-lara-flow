@@ -5,6 +5,9 @@ use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\Facades\SagaFlow;
 use DiscoveryUkraine\SagaLaraFlow\FlowHandle;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
+use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\FlakyPaymentAction;
+use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\RetryOnSignalWorkflow;
+use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\SignalOnlyWorkflow;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\TestWorkflow;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\TwoStepWorkflow;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -35,10 +38,10 @@ beforeEach(function () {
 
 it('filters by status', function () {
     expect(SagaFlow::query()->whereStatus(FlowStatus::Running)->get()->pluck('id')->all())
-        ->toBe([$this->running->id]);
-
-    expect(SagaFlow::query()->failed()->get()->pluck('id')->all())
+        ->toBe([$this->running->id])
+        ->and(SagaFlow::query()->failed()->get()->pluck('id')->all())
         ->toBe([$this->failed->id]);
+
 });
 
 it('filters to signalable (non-terminal, non-cancelling) runs', function () {
@@ -67,10 +70,9 @@ it('filters by workflow class', function () {
 
 it('filters by tag key and value', function () {
     expect(SagaFlow::query()->whereTag('order', '1')->get()->pluck('id')->all())
-        ->toEqualCanonicalizing([$this->running->id, $this->completed->id]);
-
-    // Key-only matches any value.
-    expect(SagaFlow::query()->whereTag('order')->count())->toBe(3);
+        ->toEqualCanonicalizing([$this->running->id, $this->completed->id])
+        // Key-only matches any value.
+        ->and(SagaFlow::query()->whereTag('order')->count())->toBe(3);
 });
 
 it('combines filters', function () {
@@ -100,8 +102,43 @@ it('filters by created_at window', function () {
     FlowRun::query()->whereKey($this->failed->id)->update(['created_at' => now()->subDays(5)]);
 
     expect(SagaFlow::query()->before(now()->subDay())->get()->pluck('id')->all())
-        ->toBe([$this->failed->id]);
-
-    expect(SagaFlow::query()->after(now()->subDay())->get()->pluck('id')->all())
+        ->toBe([$this->failed->id])
+        ->and(SagaFlow::query()->after(now()->subDay())->get()->pluck('id')->all())
         ->toEqualCanonicalizing([$this->running->id, $this->completed->id]);
+});
+
+it('filters runs with an open wait signal', function () {
+    config()->set('saga-lara-flow.signals.wake_workflow_on_signal', false);
+    FlakyPaymentAction::reset(failures: 99);
+
+    $awaiting = SagaFlow::create(SignalOnlyWorkflow::class)->runSync();
+    $parked = SagaFlow::create(RetryOnSignalWorkflow::class)->withArguments('order-q')->runSync();
+
+    expect($awaiting->status)->toBe(FlowStatus::Waiting)
+        ->and($parked->status)->toBe(FlowStatus::Waiting)
+        ->and(SagaFlow::query()->whereAwaitingSignal('go')->get()->pluck('id')->all())
+        ->toBe([$awaiting->id])
+        ->and(SagaFlow::query()->whereAwaitingSignal('balance-refilled')->get()->pluck('id')->all())
+        ->toBe([$parked->id])
+        ->and(SagaFlow::query()->whereAwaitingSignal()->get()->pluck('id')->all())
+        ->toEqualCanonicalizing([$awaiting->id, $parked->id]);
+
+});
+
+it('filters runs parked by retryOnSignal as a subset of awaiting signal', function () {
+    config()->set('saga-lara-flow.signals.wake_workflow_on_signal', false);
+    FlakyPaymentAction::reset(failures: 99);
+
+    $awaiting = SagaFlow::create(SignalOnlyWorkflow::class)->runSync();
+    $parked = SagaFlow::create(RetryOnSignalWorkflow::class)->withArguments('order-r')->runSync();
+
+    expect(SagaFlow::query()->whereAwaitingRetrySignal('balance-refilled')->get()->pluck('id')->all())
+        ->toBe([$parked->id])
+        ->and(SagaFlow::query()->whereAwaitingRetrySignal()->get()->pluck('id')->all())
+        ->toBe([$parked->id])
+        // An awaitSignal wait is not a retry park.
+        ->and(SagaFlow::query()->whereAwaitingRetrySignal()->get()->pluck('id')->all())
+        ->not->toContain($awaiting->id)
+        ->and(SagaFlow::query()->whereAwaitingSignal('balance-refilled')->get()->pluck('id')->all())
+        ->toContain($parked->id);
 });

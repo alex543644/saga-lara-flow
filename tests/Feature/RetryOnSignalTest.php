@@ -61,10 +61,9 @@ it('parks a failed step on its signal instead of failing the flow', function () 
     expect($run->signals()->get())->toHaveCount(1)
         ->and($marker->status)->toBe(SignalStatus::Waiting)
         ->and($marker->name)->toBe('balance-refilled')
-        ->and($marker->wait_sequence)->toBe(1);
-
-    // A parked step is not terminal, so nothing has rolled back.
-    expect(CompensationLog::all())->toBe([])
+        ->and($marker->wait_sequence)->toBe(1)
+        // A parked step is not terminal, so nothing has rolled back.
+        ->and(CompensationLog::all())->toBe([])
         ->and($run->events()->pluck('type')->all())->toContain(FlowEventType::ActionAwaitingRetry);
 });
 
@@ -96,9 +95,8 @@ it('retries only the parked step when the signal arrives', function () {
 
     expect($final->signals()->get())->toHaveCount(1)
         ->and($marker->status)->toBe(SignalStatus::Consumed)
-        ->and($marker->wait_sequence)->toBe(1);
-
-    expect(CompensationLog::all())->toBe([])
+        ->and($marker->wait_sequence)->toBe(1)
+        ->and(CompensationLog::all())->toBe([])
         ->and($final->events()->pluck('type')->all())->toContain(FlowEventType::ActionRetried);
 });
 
@@ -124,9 +122,8 @@ it('parks again when the retried step fails once more', function () {
     expect($markers)->toHaveCount(2)
         ->and($markers[0]->status)->toBe(SignalStatus::Consumed)
         ->and($markers[1]->status)->toBe(SignalStatus::Waiting)
-        ->and($markers->pluck('wait_sequence')->all())->toBe([1, 1]);
-
-    expect(CompensationLog::all())->toBe([]);
+        ->and($markers->pluck('wait_sequence')->all())->toBe([1, 1])
+        ->and(CompensationLog::all())->toBe([]);
 });
 
 it('succeeds on the third attempt and carries the saga on', function () {
@@ -146,9 +143,8 @@ it('succeeds on the third attempt and carries the saga on', function () {
     $step = $final->actions()->where('sequence', 1)->first();
 
     expect($step->status)->toBe(ActionStatus::Completed)
-        ->and($step->retry_signal_attempts)->toBe(2);
-
-    expect($final->actions()->count())->toBe(3)
+        ->and($step->retry_signal_attempts)->toBe(2)
+        ->and($final->actions()->count())->toBe(3)
         ->and(CompensationLog::all())->toBe([]);
 });
 
@@ -165,11 +161,10 @@ it('fails normally when the failure falls outside only', function () {
     $step = $run->actions()->where('sequence', 1)->first();
 
     expect($step->status)->toBe(ActionStatus::Failed)
-        ->and($run->signals()->count())->toBe(0);
-
-    // The completed step before it rolled back, exactly as it would have without
-    // any retry policy in play.
-    expect(CompensationLog::all())->toBe(['undo:created']);
+        ->and($run->signals()->count())->toBe(0)
+        // The completed step before it rolled back, exactly as it would have without
+        // any retry policy in play.
+        ->and(CompensationLog::all())->toBe(['undo:created']);
 });
 
 it('writes a retry ceiling only for a step that carries the policy', function () {
@@ -214,10 +209,9 @@ it('rejects a negative retry budget or wait', function () {
         ->runSync();
 
     expect($wait->status)->toBe(FlowStatus::Failed)
-        ->and($wait->exception['message'] ?? '')->toContain('waitSeconds must be zero or greater');
-
-    // Refused before anything was scheduled, so no step carries a negative ceiling.
-    expect($budget->actions()->whereNotNull('retry_signal_max_attempts')->count())->toBe(0);
+        ->and($wait->exception['message'] ?? '')->toContain('waitSeconds must be zero or greater')
+        // Refused before anything was scheduled, so no step carries a negative ceiling.
+        ->and($budget->actions()->whereNotNull('retry_signal_max_attempts')->count())->toBe(0);
 });
 
 it('rejects a negative configured retry budget', function () {
@@ -248,12 +242,11 @@ it('surfaces a failure that happened before the step could be recorded as failed
         ->runSync();
 
     // Without the guard the seam replayed a step that never reached Failed, and a
-    // sync run suspended on a job that does not exist: waiting for ever, no signal
+    // sync run suspended on a job that does not exist: waiting forever, no signal
     // to wake it, and the real error swallowed.
     expect($run->status)->toBe(FlowStatus::Failed)
         ->and($run->exception['class'] ?? null)->toBe(RuntimeException::class)
-        ->and($run->signals()->count())->toBe(0);
-
-    // And it rolls back the way it would have without any retry policy.
-    expect(CompensationLog::all())->toBe(['undo:created']);
+        ->and($run->signals()->count())->toBe(0)
+        // And it rolls back the way it would have without any retry policy.
+        ->and(CompensationLog::all())->toBe(['undo:created']);
 });

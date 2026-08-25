@@ -63,6 +63,47 @@ readonly class FlowHandle
     }
 
     /**
+     * Attach a queryable tag to this run. Same updateOrCreate semantics as the
+     * workflow-side tag(): match on (flow_run_id, key), overwrite the value.
+     *
+     * Tags are not history — they carry no sequence and are never consulted during
+     * replay. A workflow calling $this->tag('x', ...) in handle() re-runs that
+     * write on every replay, so a value set here is overwritten if the workflow
+     * writes the same key. Prefer keys the workflow does not write itself.
+     */
+    public function tag(string $key, string|int|null $value = null): static
+    {
+        $this->withTags([
+            $key => $value,
+        ]);
+
+        return $this;
+    }
+
+    /**
+     * Attach several queryable tags at once, keyed by tag name. Same semantics as
+     * tag() for each entry.
+     *
+     * @param  array<string, string|int|null>  $tags
+     */
+    public function withTags(array $tags): static
+    {
+        /**
+         * Use updateOrCreate instead of upsert
+         * to apply casts, events, etc.
+         * */
+        foreach ($tags as $key => $value) {
+            $this->flowRun->tags()->updateOrCreate(
+                ['key' => $key],
+                ['value' => $value],
+            );
+        }
+        $this->flowRun->load('tags');
+
+        return $this;
+    }
+
+    /**
      * Deliver an external signal to this run and wake it. Throws on a terminal run.
      *
      * @param  array<int|string, mixed>  $payload

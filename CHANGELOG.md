@@ -2,6 +2,36 @@
 
 All notable changes to `saga-lara-flow` will be documented in this file.
 
+## Unreleased
+
+### Changed: unique tag keys and faster awaiting-retry queries
+
+Tag writes promised one row per key per run, but the DB unique was `(flow_run_id, key, value)`,
+so two concurrent first writes with different values could both insert. A migration now:
+
+- collapses any existing duplicate keys (keeps the newest row),
+- replaces that unique with `(flow_run_id, key)`,
+- adds `(status, retry_signal, flow_run_id)` on `action_runs` for `whereAwaitingRetrySignal()`.
+
+Tag writers keep `updateOrCreate` on `(flow_run_id, key)` so `AsTagValue` and model events still
+run. The unique constraint is what makes “one row per key” hold under concurrency.
+
+### Added: query parked waits and tag runs from outside (#15)
+
+`retryOnSignal()` shipped in 1.1.0 with a write path and no first-class read path. Finding a parked
+run required `FlowQuery::builder()` and knowledge of `action_runs` / `flow_signals`. Two filters
+close that gap, and `FlowHandle` gains the same tag writers the workflow trait already owns:
+
+- `FlowQuery::whereAwaitingSignal(?string $name = null)` — runs with an open wait
+  (`awaitSignal()` or `retryOnSignal()`).
+- `FlowQuery::whereAwaitingRetrySignal(?string $signal = null)` — runs holding an
+  `awaiting_retry` step. Nested under `whereAwaitingSignal()` for the same name.
+- `FlowHandle::tag()` / `withTags()` — `updateOrCreate` semantics matching
+  `ProvidesFlowMetadata`, without colliding with the existing `tags()` read accessor.
+
+Tags written from outside should not use keys the workflow writes in `handle()`: those writes
+replay and overwrite the host value.
+
 ## v1.1.1 - 2026-08-24
 
 ### Documentation: deadlines and the expiration sweep

@@ -2,6 +2,7 @@
 
 namespace DiscoveryUkraine\SagaLaraFlow\Models;
 
+use DiscoveryUkraine\SagaLaraFlow\Casts\AsTagValue;
 use DiscoveryUkraine\SagaLaraFlow\Models\Concerns\UsesSagaFlowConnection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -23,6 +24,13 @@ class FlowTag extends Model
     protected string $baseTable = 'flow_tags';
 
     protected $guarded = [];
+
+    protected function casts(): array
+    {
+        return [
+            'value' => AsTagValue::class,
+        ];
+    }
 
     public function flowRun(): BelongsTo
     {

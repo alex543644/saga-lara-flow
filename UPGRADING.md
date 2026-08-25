@@ -1,5 +1,24 @@
 # Upgrading
 
+## Unreleased (post-1.2.0)
+
+### Run the new migration
+
+`index_awaiting_retry_and_unique_flow_tag_keys` does two things:
+
+1. Indexes `action_runs (status, retry_signal, flow_run_id)` so `FlowQuery::whereAwaitingRetrySignal()`
+   can find parked steps without scanning the table.
+2. Changes `flow_tags` uniqueness from `(flow_run_id, key, value)` to `(flow_run_id, key)`. Any
+   duplicate keys already present are collapsed (newest row kept) before the unique is applied.
+
+```bash
+php artisan migrate
+```
+
+Tag writers (`$this->tags()` / `FlowHandle::withTags()`) still use `updateOrCreate` on
+`(flow_run_id, key)`. Behaviour for healthy data is unchanged: one value per key per run, last
+write wins.
+
 ## From 1.1.x to 1.2.0
 
 > ### ⚠️ Run `php artisan migrate` immediately after upgrading

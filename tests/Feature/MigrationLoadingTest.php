@@ -50,6 +50,11 @@ it('adds the retry-on-signal columns to action_runs', function (): void {
 });
 
 it('rolls the retry-on-signal columns back down again', function (): void {
+    // The awaiting-retry index references retry_signal; drop it first (same order
+    // migrate:rollback would use) or SQLite refuses the column drop.
+    $index = include __DIR__.'/../../database/migrations/2026_08_26_000000_index_awaiting_retry_and_unique_flow_tag_keys.php';
+    $index->down();
+
     $migration = include __DIR__.'/../../database/migrations/2026_08_21_000000_add_retry_on_signal_to_action_runs.php';
     $migration->down();
 
@@ -60,6 +65,7 @@ it('rolls the retry-on-signal columns back down again', function (): void {
         ->and(Schema::hasColumn('saga_action_runs', 'attempts'))->toBeTrue();
 
     $migration->up();
+    $index->up();
 
     expect(Schema::hasColumn('saga_action_runs', 'retry_signal'))->toBeTrue();
 });
