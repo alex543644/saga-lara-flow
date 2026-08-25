@@ -4,6 +4,7 @@ use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\Facades\SagaFlow;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\TaggingReplayWorkflow;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\TaggingWorkflow;
+use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\TestWorkflow;
 
 it('attaches several tags at once from inside the workflow', function () {
     $run = SagaFlow::create(TaggingWorkflow::class)->runSync();
@@ -46,4 +47,26 @@ it('keeps bulk tagging idempotent across replays', function () {
         ->and($run->tags()->count())->toBe(2)
         ->and($run->tags()->pluck('value', 'key')->all())
         ->toEqualCanonicalizing(['stage' => 'done', 'tenant' => 'acme']);
+});
+
+it('tags a run from outside the workflow through FlowHandle', function () {
+    $run = SagaFlow::create(TestWorkflow::class)->runSync();
+
+    $handle = SagaFlow::loadFlow($run->id)
+        ->tag('payment-failed')
+        ->withTags(['attempt' => 2, 'orders' => null]);
+
+    // Same updateOrCreate semantics as the workflow trait: int cast to string,
+    // null value allowed, re-tagging a key overwrites rather than duplicating.
+    expect($handle->run()->tags()->pluck('value', 'key')->all())
+        ->toEqualCanonicalizing([
+            'payment-failed' => null,
+            'attempt' => '2',
+            'orders' => null,
+        ]);
+
+    $handle->tag('attempt', 3);
+
+    expect($handle->run()->fresh()->tags()->where('key', 'attempt')->count())->toBe(1)
+        ->and($handle->run()->fresh()->tags()->where('key', 'attempt')->value('value'))->toBe('3');
 });

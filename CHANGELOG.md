@@ -2,6 +2,24 @@
 
 All notable changes to `saga-lara-flow` will be documented in this file.
 
+## Unreleased
+
+### Added: query parked waits and tag runs from outside (#9)
+
+`retryOnSignal()` shipped in 1.1.0 with a write path and no first-class read path. Finding a parked
+run required `FlowQuery::builder()` and knowledge of `action_runs` / `flow_signals`. Two filters
+close that gap, and `FlowHandle` gains the same tag writers the workflow trait already owns:
+
+- `FlowQuery::whereAwaitingSignal(?string $name = null)` — runs with an open wait
+  (`awaitSignal()` or `retryOnSignal()`).
+- `FlowQuery::whereAwaitingRetrySignal(?string $signal = null)` — runs holding an
+  `awaiting_retry` step. Nested under `whereAwaitingSignal()` for the same name.
+- `FlowHandle::tag()` / `withTags()` — `updateOrCreate` semantics matching
+  `ProvidesFlowMetadata`, without colliding with the existing `tags()` read accessor.
+
+Tags written from outside should not use keys the workflow writes in `handle()`: those writes
+replay and overwrite the host value.
+
 ## v1.1.1 - 2026-08-24
 
 ### Documentation: deadlines and the expiration sweep

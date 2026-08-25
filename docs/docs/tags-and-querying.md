@@ -8,7 +8,8 @@ sidebar_position: 13
 
 ## Tagging runs
 
-Attach searchable key/value tags at creation, declaratively, or from inside the workflow:
+Attach searchable key/value tags at creation, declaratively, from inside the workflow, or from
+outside through a `FlowHandle`:
 
 ```php
 SagaFlow::create(CheckoutWorkflow::class)
@@ -35,10 +36,27 @@ $this->tags([
 ]);
 ```
 
-Explicit tags passed to `withTags()` override attribute tags with the same key.
+```php
+// from outside, on a loaded handle — same updateOrCreate semantics
+SagaFlow::loadFlow($runId)
+    ->tag('payment-failed')
+    ->withTags(['attempt' => 2, 'orders' => null]);
+```
+
+Explicit tags passed to `withTags()` override attribute tags with the same key. The batch writer on
+a handle is `withTags()`, not `tags()`, because `FlowHandle::tags()` is already the read accessor
+and `CreateWorkflowBuilder` already uses `withTags()` for the same write.
 
 Re-tagging an existing key overwrites its value rather than adding a second tag, and both `tag()`
-and `tags()` are idempotent across replays — safe to call unconditionally at the top of `handle()`.
+and `tags()` / `withTags()` are idempotent across replays — safe to call unconditionally at the top
+of `handle()`.
+
+:::caution Outside tags vs workflow tags
+Tags are not history: they carry no sequence and are never consulted during replay. A workflow
+calling `$this->tag('x', ...)` in `handle()` re-runs that write on **every replay**, so a value a
+host application set through `FlowHandle::tag('x', ...)` is overwritten the next time the run
+resumes. Tag keys written from outside should not collide with keys the workflow writes itself.
+:::
 
 ## Querying runs
 
@@ -63,7 +81,28 @@ $stuck = SagaFlow::query()
   or `Waiting`. Use this to find a run to deliver a signal to: a flow parked on `awaitSignal()` is
   `Waiting`, not `Running`, so `running()` would miss it.
 - `whereWorkflow(string $workflowClass)`
+- `whereAwaitingSignal(?string $name = null)` — runs with an open wait for a signal, whichever seam
+  opened it (`awaitSignal()` or `retryOnSignal()`). A null `$name` matches any.
+- `whereAwaitingRetrySignal(?string $signal = null)` — runs holding a step parked by
+  `retryOnSignal()` (`action_runs` in `awaiting_retry`). A null `$signal` matches any. This is a
+  **subset** of `whereAwaitingSignal()` for the same name: every retry park also writes a Waiting
+  row in `flow_signals`, so the two states are indistinguishable from signals alone.
 - `before(DateTimeInterface)` / `after(DateTimeInterface)` (both filter `created_at`)
+
+```php
+// everything blocked on this name, planned waits included
+SagaFlow::query()->whereAwaitingSignal('approval')->get();
+
+// only steps that failed and parked
+SagaFlow::query()->whereAwaitingRetrySignal('balance-refilled')->handles();
+```
+
+| | `awaitSignal('approval')` | `retryOnSignal('balance-refilled')` |
+|---|---|---|
+| `flow_runs.status` | `waiting` | `waiting` |
+| row in `flow_signals` | `approval / waiting` | `balance-refilled / waiting` |
+| row in `action_runs` at that wait | none | `awaiting_retry`, `retry_signal` set |
+| failure snapshot for operators | none | `exception: {class, message, code}` |
 
 ### Terminals
 

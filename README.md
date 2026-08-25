@@ -479,7 +479,8 @@ unless you call `->continueParentOnFailure()`. The default close policy is confi
 
 ## Tags & querying
 
-Attach searchable key/value tags at creation or from inside the workflow:
+Attach searchable key/value tags at creation, from inside the workflow, or from outside through a
+`FlowHandle`:
 
 ```php
 SagaFlow::create(CheckoutWorkflow::class)
@@ -491,7 +492,15 @@ $this->tag('priority', 'high');
 
 // or several at once — idempotent across replays, re-tagging a key overwrites it
 $this->tags(['priority' => 'high', 'attempt' => 2, 'orders' => null]);
+
+// from outside — same semantics; withTags() because tags() is the read accessor
+SagaFlow::loadFlow($runId)
+    ->tag('payment-failed')
+    ->withTags(['attempt' => 2]);
 ```
+
+Tag keys written from outside should not collide with keys the workflow writes in `handle()`: a
+workflow `$this->tag('x', ...)` re-runs on every replay and would overwrite the host value.
 
 Query runs with the fluent, type-safe `FlowQuery`:
 
@@ -507,10 +516,15 @@ $stuck = SagaFlow::query()
 
 $handles = SagaFlow::query()->running()->handles();   // Collection<FlowHandle>
 $count   = SagaFlow::query()->failed()->count();
+
+// open waits (awaitSignal or retryOnSignal); parked steps only
+SagaFlow::query()->whereAwaitingSignal('approval')->get();
+SagaFlow::query()->whereAwaitingRetrySignal('balance-refilled')->handles();
 ```
 
 Status shortcuts: `running()`, `waiting()`, `completed()`, `failed()`, plus `active()` /
 `signalable()` (Pending, Running, or Waiting) for finding a run to deliver a signal to.
+`whereAwaitingRetrySignal()` is a subset of `whereAwaitingSignal()` for the same name.
 
 Terminals: `get()`, `first()`, `count()`, `paginate()`, `handles()`, and `builder()` (the raw
 Eloquent builder for ordering/limits).
