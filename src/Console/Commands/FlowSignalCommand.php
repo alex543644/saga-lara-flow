@@ -2,6 +2,7 @@
 
 namespace DiscoveryUkraine\SagaLaraFlow\Console\Commands;
 
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\CannotSignalRetryException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\CannotSignalTerminalFlowException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\FlowNotFoundException;
 use DiscoveryUkraine\SagaLaraFlow\FlowManager;
@@ -9,7 +10,8 @@ use Illuminate\Console\Command;
 
 /**
  * Delivers an external signal to a run and wakes it. An optional --payload is a
- * JSON-encoded object/array passed to the waiting handle().
+ * JSON-encoded object/array passed to the waiting handle(). Retry-on-signal
+ * wakes use saga-flow:signal-retry instead.
  */
 class FlowSignalCommand extends Command
 {
@@ -52,6 +54,11 @@ class FlowSignalCommand extends Command
             $this->warn("Flow run [{$handle->id()}] is terminal; signal [$name] not delivered.");
 
             return self::SUCCESS;
+        } catch (CannotSignalRetryException $exception) {
+            $this->error($exception->getMessage());
+            $this->line('Use saga-flow:signal-retry for retryOnSignal() wakes.');
+
+            return self::FAILURE;
         }
 
         $this->info("Signal [$name] delivered to flow run [{$handle->id()}].");

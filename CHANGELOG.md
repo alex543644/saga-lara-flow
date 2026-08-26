@@ -2,6 +2,25 @@
 
 All notable changes to `saga-lara-flow` will be documented in this file.
 
+## Unreleased
+
+### `FlowQuery::whereId()`
+
+Filter by one or more run ids without dropping to `builder()`: `->whereId(...$runIds)`.
+
+### `signal` / `signalRetry` family split (breaking)
+
+`signal()` / `signalIfRunning()` reject a name that is a `retryOnSignal()` policy on the run
+(`CannotSignalRetryException`). Wake those steps with `signalRetry()` /
+`signalRetryIfRunning()` (optional name; no payload), or `php artisan saga-flow:signal-retry`.
+
+- Name omitted → must have an `awaiting_retry` step (`NoAwaitingRetrySignalException`).
+- Name given → must be a declared retry policy on the run (`InvalidRetrySignalException`), including
+  early delivery before the step parks.
+
+Replace `->signal('balance-refilled')` (and CLI `saga-flow:signal … balance-refilled`) with
+`->signalRetry('balance-refilled')` / `saga-flow:signal-retry`.
+
 ## v1.1.1 - 2026-08-24
 
 ### Documentation: deadlines and the expiration sweep

@@ -80,6 +80,7 @@ $stuck = SagaFlow::query()
   or `Waiting`. Use this to find a run to deliver a signal to: a flow parked on `awaitSignal()` is
   `Waiting`, not `Running`, so `running()` would miss it.
 - `whereWorkflow(string $workflowClass)`
+- `whereId(string ...$ids)` — one or more run ids
 - `whereAwaitingSignal(?string $name = null)` — runs whose wait for a signal is still open,
   whichever seam opened it (`awaitSignal()` or `retryOnSignal()`). A null `$name` matches any.
 - `whereAwaitingRetrySignal(?string $signal = null)` — runs holding a step parked by
@@ -92,7 +93,17 @@ SagaFlow::query()->whereAwaitingSignal('approval')->get();
 
 // only steps that failed and parked
 SagaFlow::query()->whereAwaitingRetrySignal('balance-refilled')->handles();
+
+// bulk wake: every parked retry among these ids, whatever each signal name is
+SagaFlow::query()
+    ->whereAwaitingRetrySignal()
+    ->signalable()
+    ->whereId(...$runIds)
+    ->handles()
+    ->each(fn ($handle) => $handle->signalRetry());
 ```
+
+See [Bulk wake without knowing the signal names](./retry-on-signal.md#bulk-wake-without-knowing-the-signal-names).
 
 ### Waits and parked steps
 

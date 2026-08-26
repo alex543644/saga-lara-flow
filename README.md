@@ -357,6 +357,10 @@ SagaFlow::loadFlow($runId)->signal('approval', ['approved' => true]);
 SagaFlow::loadFlow($runId)->signalIfRunning('approval', ['approved' => true]);
 ```
 
+`signal()` is for `awaitSignal()` waits (optional payload). A `retryOnSignal()` wake uses
+`signalRetry()` / `signalRetryIfRunning()` instead — `signal()` rejects those names. See
+[Retry on signal](#retry-on-signal) below.
+
 No `$runId`? Find the run by workflow and tag, then signal it. Use `signalable()` (alias `active()`),
 **not** `running()` — a flow parked on `awaitSignal()` is `Waiting`, not `Running`:
 
@@ -388,8 +392,10 @@ $this->action(ChargeCard::class, $orderId)
     ->run();
 ```
 
-Deliver `balance-refilled` the way you deliver any other signal and `ChargeCard` runs again, alone;
-earlier steps stay completed and un-compensated. The layers stack: Laravel's `$tries` first, then
+Deliver `balance-refilled` with `signalRetry()` (not `signal()` — that family rejects retry policy
+names) and `ChargeCard` runs again, alone; earlier steps stay completed and un-compensated. When you
+do not know which retry wake is open, omit the name on `signalRetry()` / `signalRetryIfRunning()`.
+The layers stack: Laravel's `$tries` first, then
 `retryOnSignal()`, then `continueOnFailure()`, then hard failure and compensation. When the budget is
 spent or the wait times out, the step fails exactly as it would have without the policy — same
 `ActionFailedException`, same rollback.
@@ -522,6 +528,9 @@ SagaFlow::query()->whereAwaitingSignal('approval')->get();
 
 // runs holding a step parked by retryOnSignal()
 SagaFlow::query()->whereAwaitingRetrySignal('balance-refilled')->handles();
+
+// narrow to known run ids without builder()
+SagaFlow::query()->whereId(...$runIds)->get();
 ```
 
 Status shortcuts: `running()`, `waiting()`, `completed()`, `failed()`, plus `active()` /

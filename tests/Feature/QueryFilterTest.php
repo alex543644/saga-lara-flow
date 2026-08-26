@@ -65,6 +65,14 @@ it('filters by workflow class', function () {
         ->toBe([$this->completed->id]);
 });
 
+it('filters by run id', function () {
+    expect(SagaFlow::query()->whereId($this->running->id)->get()->pluck('id')->all())
+        ->toBe([$this->running->id]);
+
+    expect(SagaFlow::query()->whereId($this->running->id, $this->failed->id)->get()->pluck('id')->all())
+        ->toEqualCanonicalizing([$this->running->id, $this->failed->id]);
+});
+
 it('filters by tag key and value', function () {
     expect(SagaFlow::query()->whereTag('order', '1')->get()->pluck('id')->all())
         ->toEqualCanonicalizing([$this->running->id, $this->completed->id]);

@@ -74,6 +74,42 @@ $delivered = SagaFlow::loadFlow($runId)->signalIfRunning('approval', ['approved'
 `signalIfRunning()` means *"unless the run has already finished"* — it delivers to **any
 non-terminal run**, not only a `Running` one.
 
+### `signal()` vs `signalRetry()`
+
+Two different seams, two delivery methods. Mixing them throws.
+
+| | `signal()` / `signalIfRunning()` | `signalRetry()` / `signalRetryIfRunning()` |
+|---|---|---|
+| **Use when** | The workflow is (or will be) on `awaitSignal('name')` | A step used `retryOnSignal('name')` and you want to wake / early-deliver that policy |
+| **Payload** | Yes — returned from `awaitSignal()` | No — wake only; the action re-runs with its original arguments |
+| **Name** | Required | Optional: omit to wake whatever is `awaiting_retry`; pass a name to target a declared policy |
+| **Wrong family** | `CannotSignalRetryException` if `$name` is a `retryOnSignal()` policy on the run | `InvalidRetrySignalException` if `$name` is not a retry policy on the run |
+| **CLI** | `saga-flow:signal {run} {name} [--payload=]` | `saga-flow:signal-retry {run} [name]` |
+
+```php
+// ordinary await
+SagaFlow::loadFlow($runId)->signal('approval', ['approved' => true]);
+
+// retry-on-signal wake (not signal('balance-refilled'))
+SagaFlow::loadFlow($runId)->signalRetry('balance-refilled');
+SagaFlow::loadFlow($runId)->signalRetry(); // any awaiting_retry step
+```
+
+Bulk wake for a set of parked runs (signal names may differ or be unknown):
+
+```php
+SagaFlow::query()
+    ->whereAwaitingRetrySignal()
+    ->signalable()
+    ->whereId(...$runIds)
+    ->handles()
+    ->each(fn ($handle) => $handle->signalRetry());
+```
+
+See [Bulk wake without knowing the signal names](./retry-on-signal.md#bulk-wake-without-knowing-the-signal-names).
+
+Full retry behaviour: [Retry on signal](./retry-on-signal.md).
+
 ### Finding the run to signal
 
 Often you do not have the `$runId` on hand — you know the workflow and a tag. Query for it:
@@ -95,13 +131,12 @@ trying to wake.
 
 ## Reviving a failed step
 
-A signal can also restart a step that already failed, instead of being awaited at a point in
-`handle()`. `->retryOnSignal('balance-refilled')` on an action parks it when it fails and re-runs it
-when that signal is delivered — using the same delivery API as everything above. See
-[Retry on signal](./retry-on-signal.md).
+That is `signalRetry()`, not `signal()` — see [`signal()` vs `signalRetry()`](#signal-vs-signalretry)
+above and [Retry on signal](./retry-on-signal.md).
 
 You can also deliver from the CLI — see [Artisan commands](./artisan-commands.md):
 
 ```bash
 php artisan saga-flow:signal {run} approval --payload='{"approved":true}'
+php artisan saga-flow:signal-retry {run} balance-refilled
 ```

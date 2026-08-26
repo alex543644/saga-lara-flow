@@ -45,8 +45,8 @@ alone; if it succeeds, the workflow continues to `ShipOrder` as if nothing had h
 )
 ```
 
-- **`$signal`** — the signal name to wait for. An ordinary signal: deliver it exactly the way you
-  deliver any other (see [Signals](./signals.md)).
+- **`$signal`** — the retry wake name. Deliver it with `signalRetry()` /
+  `saga-flow:signal-retry`, not `signal()` (see [Signals](./signals.md)).
 - **`$maxRetries`** — how many signal-gated retry cycles this step may spend. `null` falls back to
   `actions.retry_on_signal.max_retries` in the config, and then to unbounded.
 - **`$waitSeconds`** — how long *one* wait may last before the monitor gives up on it. A duration,
@@ -131,16 +131,21 @@ $this->saga()
     ->run();
 ```
 
-## Delivering the signal
+## Delivering the wake
 
-Nothing special — it is an ordinary signal:
+Retry wakes are **not** ordinary signals. Use `signalRetry()` / `signalRetryIfRunning()` —
+`signal()` rejects a name that is a `retryOnSignal()` policy on the run. For the full comparison
+(payload, exceptions, CLI), see [`signal()` vs `signalRetry()`](./signals.md#signal-vs-signalretry).
 
 ```php
-SagaFlow::loadFlow($runId)->signal('balance-refilled');
+SagaFlow::loadFlow($runId)->signalRetry();                  // whatever is awaiting_retry
+SagaFlow::loadFlow($runId)->signalRetry('balance-refilled'); // named policy (incl. early delivery)
+SagaFlow::loadFlow($runId)->signalRetryIfRunning();         // false on a terminal run
 ```
 
 ```bash
-php artisan saga-flow:signal 01JABCDEF... balance-refilled
+php artisan saga-flow:signal-retry 01JABCDEF...
+php artisan saga-flow:signal-retry 01JABCDEF... balance-refilled
 ```
 
 Usually you do not have the run id at hand. Query for it with `whereAwaitingRetrySignal()`, and
@@ -150,19 +155,41 @@ filter with `signalable()` (a parked run is `Waiting`, never `Running`):
 SagaFlow::query()
     ->whereWorkflow(CheckoutWorkflow::class)
     ->whereTag('customer', $customerId)
-    ->whereAwaitingRetrySignal('balance-refilled')
+    ->whereAwaitingRetrySignal() // any retry signal — or pass a name to narrow
     ->signalable()
     ->handles()
-    ->first()
-    ?->signal('balance-refilled');
+    ->each(fn ($handle) => $handle->signalRetry());
 ```
+
+### Bulk wake without knowing the signal names
+
+Several runs may be parked on different retry policies at once — `balance-refilled` on one,
+`stock-replenished` on another. To wake a known set of runs, each on whatever it is waiting for,
+combine `whereAwaitingRetrySignal()` (no name), `whereId(...)`, and nameless `signalRetry()`:
+
+```php
+$runIds = [/* … */];
+
+SagaFlow::query()
+    ->whereWorkflow(CheckoutWorkflow::class)
+    ->whereTag('tenant', $tenantId)
+    ->whereAwaitingRetrySignal()
+    ->signalable()
+    ->whereId(...$runIds)
+    ->handles()
+    ->each(fn ($handle) => $handle->signalRetry());
+```
+
+`whereAwaitingRetrySignal()` matches every parked retry; `signalRetry()` reads each run’s
+`retry_signal` and delivers it. Pass a name to either only when you intend to target one policy
+and leave the others parked.
 
 `whereAwaitingSignal()` is the wider filter: it also matches a run parked by `awaitSignal()` on that
 name. See [Tags & querying](./tags-and-querying.md#waits-and-parked-steps).
 
-The signal's **payload is not passed to the action**. Action arguments must stay identical across
-replays, so the retried step runs with the arguments it was given originally; the payload is stored
-on the signal row for auditing. If the retry needs new data, read it inside the action.
+A retry wake carries **no payload**. It only re-runs the parked step with the arguments it was
+scheduled with, so replay stays deterministic. If the step needs fresh data after the world
+changed, read it inside the action on the new attempt.
 
 ## Observing parked runs
 

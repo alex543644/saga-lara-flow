@@ -4,6 +4,8 @@ namespace DiscoveryUkraine\SagaLaraFlow\Models;
 
 use DiscoveryUkraine\SagaLaraFlow\Enums\ActionStatus;
 use DiscoveryUkraine\SagaLaraFlow\Models\Concerns\UsesSagaFlowConnection;
+use Illuminate\Database\Eloquent\Attributes\Scope;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -68,6 +70,27 @@ class ActionRun extends Model
             'repair_attempts' => 'integer',
             'repair_available_at' => 'datetime',
         ];
+    }
+
+    #[Scope]
+    protected function whereRetrySignal(Builder $query, ?string $name = null): void
+    {
+        $query->where(function (Builder $query) use ($name) {
+            if ($name === null) {
+                $query->whereNotNull('retry_signal');
+
+                return;
+            }
+
+            $query->where('retry_signal', '=', $name);
+        });
+    }
+
+    #[Scope]
+    protected function whereAwaitingRetrySignal(Builder $query, ?string $name = null): void
+    {
+        $query->where('status', ActionStatus::AwaitingRetry)
+            ->whereRetrySignal($name);
     }
 
     public function flowRun(): BelongsTo

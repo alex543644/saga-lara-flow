@@ -94,7 +94,7 @@ it('retries the parked step through the real queue', function () {
     expect($run->status)->toBe(FlowStatus::Waiting)
         ->and($run->actions()->where('sequence', 1)->first()->status)->toBe(ActionStatus::AwaitingRetry);
 
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
     drainQueue();
 
     $final = SagaFlow::findRun($run->id);
@@ -124,7 +124,7 @@ it('gives up and rolls the saga back once the retry budget is spent', function (
 
     expect(SagaFlow::findRun($run->id)->status)->toBe(FlowStatus::Waiting);
 
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
     drainQueue();
 
     $final = SagaFlow::findRun($run->id);
@@ -213,7 +213,7 @@ it('reaches the optional fallback only after the retry budget is spent', functio
         ->and($parked->actions()->count())->toBe(1)
         ->and($parked->actions()->first()->status)->toBe(ActionStatus::AwaitingRetry);
 
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
     drainQueue();
 
     $final = SagaFlow::findRun($run->id);
@@ -234,10 +234,10 @@ it('leaves the same ordinals behind whether or not the step was retried', functi
     $retried = SagaFlow::create(RetryOnSignalWorkflow::class)->withArguments('order-q6')->run();
     drainQueue();
 
-    SagaFlow::loadFlow($retried->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($retried->id)->signalRetry('balance-refilled');
     drainQueue();
 
-    SagaFlow::loadFlow($retried->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($retried->id)->signalRetry('balance-refilled');
     drainQueue();
 
     FlakyPaymentAction::reset();
@@ -274,7 +274,7 @@ it('does not lose a signal delivered between the failure and the parking', funct
     // Stop right after the attempt failed, before the resume that would park it.
     workUntilStatus($run, 1, ActionStatus::Failed);
 
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
 
     expect($run->signals()->where('status', SignalStatus::Received)->count())->toBe(1);
 
@@ -301,7 +301,14 @@ it('ignores a floating signal that predates the failed attempt', function () {
 
     $run = SagaFlow::create(RetryOnSignalWorkflow::class)->withArguments('order-q8')->run();
 
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    // Before any step is scheduled there is no declared retry policy yet, so the
+    // handle API would refuse this name — deliver through the dispatcher to plant
+    // the floating row the seam must ignore.
+    app(SignalDispatcher::class)->deliver(
+        SagaFlow::findRun($run->id),
+        'balance-refilled',
+        [],
+    );
 
     // Age it: this signal belongs to something that happened before the attempt that
     // is about to fail, so it must not be claimed by this step's retry.
@@ -369,7 +376,7 @@ it('waits for the queue to run out of attempts before spending a retry cycle', f
     expect($step->attempts)->toBe(1)
         ->and(UnreliablePaymentAction::$calls)->toBe(1);
 
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
 
     // Age it so it unambiguously predates the attempt still to come: this test is
     // about the gate, not about which attempt may claim a borderline signal.
@@ -406,7 +413,7 @@ it('ignores a queued job left over from an earlier retry cycle', function () {
     $run = SagaFlow::create(RetryOnSignalWorkflow::class)->withArguments('order-q11')->run();
     drainQueue();
 
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
     drainQueue();
 
     $step = SagaFlow::findRun($run->id)->actions()->where('sequence', 1)->first();
@@ -530,7 +537,7 @@ function stageDispatchedRetry(string $orderId): ActionRun
     // created_at it was first scheduled with.
     ActionRun::query()->whereKey($step->id)->update(['created_at' => now()->subMinutes(10)]);
 
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
 
     workUntilStatus($run, 1, ActionStatus::Pending);
 
@@ -598,7 +605,7 @@ it('gives each retry cycle its own repair budget', function () {
         'repair_attempts' => (int) config('saga-lara-flow.repair.max_attempts'),
     ]);
 
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
 
     workUntilStatus($run, 1, ActionStatus::Pending);
 
@@ -680,7 +687,7 @@ it('still owes native attempts to a step on its second retry cycle', function ()
         ->and($step->attempts)->toBe(2)
         ->and($step->retry_signal_attempts)->toBe(0);
 
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
 
     // Stop inside cycle 1, after its first native attempt failed and before the
     // second one has run. attempts is cumulative, so it now reads 3 — the gate has to
@@ -879,7 +886,7 @@ it('adopts an abandoned wait signal instead of recording a second one', function
         ->and($parked->actions()->where('sequence', 1)->first()->status)
         ->toBe(ActionStatus::AwaitingRetry);
 
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
     drainQueue();
 
     expect(SagaFlow::findRun($run->id)->status)->toBe(FlowStatus::Completed);
@@ -914,7 +921,7 @@ it('rolls the consumption back when the retry transition fails', function () {
     });
 
     try {
-        SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+        SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
         drainQueue();
     } catch (Throwable) {
         // The explosion is the setup; the rows it leaves behind are the assertion.
@@ -948,7 +955,7 @@ it('leaves a delivered signal alone when the monitor times it out', function () 
     // this is its snapshot from before the delivery landed.
     $stale = $run->signals()->firstOrFail();
 
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
 
     expect($marker->fresh()->status)->toBe(SignalStatus::Received);
 
@@ -1010,7 +1017,7 @@ it('reports a broken history contract when an awaitSignal lands on a parked step
         ->toThrow(HistoryContractMismatchException::class);
 });
 
-it('hands a delivered signal back with its payload intact', function () {
+it('delivers a retry wake with an empty payload', function () {
     useDatabaseQueue();
     FlakyPaymentAction::reset(failures: 99);
 
@@ -1023,15 +1030,13 @@ it('hands a delivered signal back with its payload intact', function () {
         $seen = $event->signal->payload;
     });
 
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled', ['topped_up' => 500]);
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
 
     $stored = SagaFlow::findRun($run->id)->signals()->where('name', 'balance-refilled')->first();
 
-    // Filling a claim's own database-ready values back into the model would encode the
-    // payload twice: the row right, every listener seeing a JSON string. And this is
-    // the ordinary awaitSignal delivery path, not just the retry one.
-    expect($stored->payload)->toBe(['topped_up' => 500])
-        ->and($seen)->toBe(['topped_up' => 500]);
+    // Retry wakes carry no operator payload — only an ordinary awaitSignal delivery does.
+    expect($stored->payload)->toBe([])
+        ->and($seen)->toBe([]);
 });
 
 it('holds the step to the budget persisted at scheduling time', function () {
@@ -1051,7 +1056,7 @@ it('holds the step to the budget persisted at scheduling time', function () {
     // the operator is being shown.
     config()->set('saga-lara-flow.actions.retry_on_signal.max_retries', 5);
 
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
     drainQueue();
 
     $final = SagaFlow::findRun($run->id);

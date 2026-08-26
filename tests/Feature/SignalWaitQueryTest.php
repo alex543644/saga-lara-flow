@@ -59,7 +59,7 @@ it('carries the failure snapshot the parked step was queried for', function () {
 it('still finds a step whose signal arrived but whose resume never did', function () {
     $parked = parkedRun();
 
-    SagaFlow::loadFlow($parked)->signal('balance-refilled');
+    SagaFlow::loadFlow($parked)->signalRetry('balance-refilled');
 
     // Delivery marks the wait Received; the step stays parked until replay resumes
     // the run. A resume that never arrives leaves the run visible only here.

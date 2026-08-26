@@ -1,5 +1,25 @@
 # Upgrading
 
+## Unreleased
+
+### `signal` vs `signalRetry` (breaking)
+
+Retry wakes no longer go through `signal()`. A name that matches a `retryOnSignal()` policy on the
+run raises `CannotSignalRetryException`. Use:
+
+```php
+SagaFlow::loadFlow($runId)->signalRetry('balance-refilled');
+// or omit the name when a step is awaiting_retry:
+SagaFlow::loadFlow($runId)->signalRetry();
+```
+
+```bash
+php artisan saga-flow:signal-retry {run} [name]
+```
+
+`saga-flow:signal` still delivers ordinary awaits (with optional `--payload`); it refuses retry
+names and points at `saga-flow:signal-retry`.
+
 ## From 1.1.x to 1.2.0
 
 > ### ⚠️ Run `php artisan migrate` immediately after upgrading

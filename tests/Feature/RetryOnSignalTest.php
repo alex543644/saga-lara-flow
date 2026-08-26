@@ -33,7 +33,7 @@ beforeEach(function () {
  */
 function refillAndDrive(FlowRun $run): FlowRun
 {
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
 
     return app(FlowExecutor::class)->drive(SagaFlow::findRun($run->id), RunMode::Sync);
 }

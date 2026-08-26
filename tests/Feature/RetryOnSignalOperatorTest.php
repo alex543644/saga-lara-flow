@@ -6,6 +6,10 @@ use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\RunMode;
 use DiscoveryUkraine\SagaLaraFlow\Events\ActionAwaitingRetry;
 use DiscoveryUkraine\SagaLaraFlow\Events\ActionRetried;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\CannotSignalRetryException;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\CannotSignalTerminalFlowException;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\InvalidRetrySignalException;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\NoAwaitingRetrySignalException;
 use DiscoveryUkraine\SagaLaraFlow\Facades\SagaFlow;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\FlowExecutor;
@@ -40,7 +44,7 @@ beforeEach(function () {
  */
 function driveAfterSignal(FlowRun $run): FlowRun
 {
-    SagaFlow::loadFlow($run->id)->signal('balance-refilled');
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
 
     return app(FlowExecutor::class)->drive(SagaFlow::findRun($run->id), RunMode::Sync);
 }
@@ -317,14 +321,14 @@ it('finds a parked run through the query API', function () {
         ->and(SagaFlow::query()->active()->count())->toBe(1);
 });
 
-it('drives a parked run to completion through saga-flow:signal', function () {
+it('drives a parked run to completion through saga-flow:signal-retry', function () {
     $run = parkedQueuedRun();
 
     expect($run->status)->toBe(FlowStatus::Waiting)
         ->and($run->actions()->where('sequence', 1)->first()->status)
         ->toBe(ActionStatus::AwaitingRetry);
 
-    Artisan::call('saga-flow:signal', ['run' => $run->id, 'name' => 'balance-refilled']);
+    Artisan::call('saga-flow:signal-retry', ['run' => $run->id, 'name' => 'balance-refilled']);
 
     drainQueue();
 
@@ -335,25 +339,90 @@ it('drives a parked run to completion through saga-flow:signal', function () {
         ->and(CompensationLog::all())->toBe([]);
 });
 
-it('carries a signal payload from saga-flow:signal into the retried run', function () {
+it('refuses saga-flow:signal when the name is a retry policy', function () {
     $run = parkedQueuedRun();
 
-    Artisan::call('saga-flow:signal', [
-        'run' => $run->id,
-        'name' => 'balance-refilled',
-        '--payload' => '{"topped_up":500}',
-    ]);
+    $exit = Artisan::call('saga-flow:signal', ['run' => $run->id, 'name' => 'balance-refilled']);
 
-    drainQueue();
+    expect($exit)->toBe(1)
+        ->and(Artisan::output())->toContain('signalRetry()')
+        ->and(SagaFlow::findRun($run->id)->status)->toBe(FlowStatus::Waiting);
+});
 
-    $final = SagaFlow::findRun($run->id);
+it('delivers the parked retry signal without naming it', function () {
+    FlakyPaymentAction::reset(failures: 1);
 
-    expect($final->status)->toBe(FlowStatus::Completed);
+    $run = SagaFlow::create(RetryOnSignalWorkflow::class)->withArguments('order-retry')->runSync();
 
-    // The delivery that ended the wait is the marker at the step's own ordinal, and
-    // it kept the payload the operator sent.
-    $marker = $final->signals()->orderByDesc('id')->first();
+    expect($run->status)->toBe(FlowStatus::Waiting);
 
-    expect($marker->wait_sequence)->toBe(1)
-        ->and($marker->payload)->toBe(['topped_up' => 500]);
+    SagaFlow::loadFlow($run->id)->signalRetry();
+
+    $final = app(FlowExecutor::class)->drive(SagaFlow::findRun($run->id), RunMode::Sync);
+
+    expect($final->status)->toBe(FlowStatus::Completed)
+        ->and($final->actions()->where('sequence', 1)->first()->retry_signal_attempts)->toBe(1);
+});
+
+it('delivers an explicitly named retry signal', function () {
+    FlakyPaymentAction::reset(failures: 1);
+
+    $run = SagaFlow::create(RetryOnSignalWorkflow::class)->withArguments('order-named')->runSync();
+
+    SagaFlow::loadFlow($run->id)->signalRetry('balance-refilled');
+
+    $final = app(FlowExecutor::class)->drive(SagaFlow::findRun($run->id), RunMode::Sync);
+
+    expect($final->status)->toBe(FlowStatus::Completed)
+        ->and($final->actions()->where('sequence', 1)->first()->retry_signal_attempts)->toBe(1);
+});
+
+it('reports signalRetryIfRunning true for a parked run', function () {
+    FlakyPaymentAction::reset(failures: 99);
+
+    $run = SagaFlow::create(RetryOnSignalWorkflow::class)->withArguments('order-safe')->runSync();
+
+    expect(SagaFlow::loadFlow($run->id)->signalRetryIfRunning())->toBeTrue();
+});
+
+it('rejects signalRetry when no step is awaiting a retry and no name is given', function () {
+    $run = SagaFlow::create(SignalOnlyWorkflow::class)->runSync();
+
+    expect($run->status)->toBe(FlowStatus::Waiting);
+
+    $handle = SagaFlow::loadFlow($run->id);
+
+    expect(fn () => $handle->signalRetry())->toThrow(NoAwaitingRetrySignalException::class);
+    expect(fn () => $handle->signalRetryIfRunning())->toThrow(NoAwaitingRetrySignalException::class);
+});
+
+it('reports signalRetryIfRunning false for a terminal parked run', function () {
+    FlakyPaymentAction::reset(failures: 99);
+
+    $run = SagaFlow::create(RetryOnSignalWorkflow::class)->withArguments('order-cancel')->runSync();
+
+    SagaFlow::loadFlow($run->id)->cancel();
+
+    $handle = SagaFlow::loadFlow($run->id);
+
+    expect(fn () => $handle->signalRetry())->toThrow(CannotSignalTerminalFlowException::class);
+    expect($handle->signalRetryIfRunning())->toBeFalse();
+});
+
+it('rejects signal() when the name is a declared retry policy', function () {
+    FlakyPaymentAction::reset(failures: 99);
+
+    $run = SagaFlow::create(RetryOnSignalWorkflow::class)->withArguments('order-family')->runSync();
+    $handle = SagaFlow::loadFlow($run->id);
+
+    expect(fn () => $handle->signal('balance-refilled'))->toThrow(CannotSignalRetryException::class);
+    expect(fn () => $handle->signalIfRunning('balance-refilled'))->toThrow(CannotSignalRetryException::class);
+});
+
+it('rejects signalRetry() when the name is not a retry policy on the run', function () {
+    $run = SagaFlow::create(SignalOnlyWorkflow::class)->runSync();
+    $handle = SagaFlow::loadFlow($run->id);
+
+    expect(fn () => $handle->signalRetry('go'))->toThrow(InvalidRetrySignalException::class);
+    expect(fn () => $handle->signalRetryIfRunning('go'))->toThrow(InvalidRetrySignalException::class);
 });

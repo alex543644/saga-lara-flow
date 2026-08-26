@@ -6,8 +6,11 @@ use DiscoveryUkraine\SagaLaraFlow\Contracts\StateMachine;
 use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\RunMode;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\CannotCancelTerminalFlowException;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\CannotSignalRetryException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\CannotSignalTerminalFlowException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\ConcurrentFlowTransitionException;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\InvalidRetrySignalException;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\NoAwaitingRetrySignalException;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\ChildWorkflowManager;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\FlowExecutor;
@@ -92,14 +95,21 @@ readonly class FlowHandle
     }
 
     /**
-     * Deliver an external signal to this run and wake it. Throws on a terminal run.
+     * Deliver an external signal to this run and wake it. Throws on a terminal
+     * run, or when $name is a retryOnSignal() policy on this run — those go
+     * through signalRetry() (no payload; wake-only).
      *
      * @param  array<int|string, mixed>  $payload
      *
      * @throws CannotSignalTerminalFlowException
+     * @throws CannotSignalRetryException
      */
     public function signal(string $name, array $payload = []): FlowRun
     {
+        if ($this->flowRun->actions()->whereRetrySignal($name)->exists()) {
+            throw CannotSignalRetryException::for($this->flowRun, $name);
+        }
+
         app(SignalDispatcher::class)->deliver($this->flowRun, $name, $payload);
 
         return $this->flowRun;
@@ -111,9 +121,12 @@ readonly class FlowHandle
      * already finished" — a signal reaches any non-terminal run (Pending, Running,
      * or Waiting, e.g. one parked on awaitSignal()), not only a Running one. (A
      * missing run cannot reach here — loadFlow() throws FlowNotFoundException before
-     * a handle is created.)
+     * a handle is created.) Still throws CannotSignalRetryException — that is the
+     * wrong delivery method, not a finished run.
      *
      * @param  array<int|string, mixed>  $payload
+     *
+     * @throws CannotSignalRetryException
      */
     public function signalIfRunning(string $name, array $payload = []): bool
     {
@@ -124,6 +137,72 @@ readonly class FlowHandle
         } catch (CannotSignalTerminalFlowException) {
             return false;
         }
+    }
+
+    /**
+     * Deliver a retryOnSignal() wake. Omit $name to wake whatever step is
+     * awaiting_retry; pass $name to target a declared retry policy (including
+     * early delivery before the step parks). No payload — a retry only re-runs
+     * the step with its original arguments.
+     *
+     * @throws CannotSignalTerminalFlowException
+     * @throws NoAwaitingRetrySignalException
+     * @throws InvalidRetrySignalException
+     */
+    public function signalRetry(?string $name = null): FlowRun
+    {
+        app(SignalDispatcher::class)->deliver(
+            $this->flowRun,
+            $this->resolveRetrySignal($name),
+            [],
+        );
+
+        return $this->flowRun;
+    }
+
+    /**
+     * Safe variant of signalRetry(): swallows the terminal-run rejection and
+     * reports whether the signal was delivered. Still throws when nothing is
+     * awaiting a retry (name omitted) or when $name is not a retry policy on
+     * this run — those are the wrong run / wrong method, not a finished one.
+     *
+     * @throws NoAwaitingRetrySignalException
+     * @throws InvalidRetrySignalException
+     */
+    public function signalRetryIfRunning(?string $name = null): bool
+    {
+        try {
+            $this->signalRetry($name);
+
+            return true;
+        } catch (CannotSignalTerminalFlowException) {
+            return false;
+        }
+    }
+
+    /**
+     * @throws NoAwaitingRetrySignalException
+     * @throws InvalidRetrySignalException
+     */
+    private function resolveRetrySignal(?string $name): string
+    {
+        if ($name !== null && ! $this->flowRun->actions()->whereRetrySignal($name)->exists()) {
+            throw InvalidRetrySignalException::for($this->flowRun, $name);
+        }
+
+        if ($name !== null) {
+            return $name;
+        }
+
+        $resolved = $this->flowRun->actions()
+            ->whereAwaitingRetrySignal()
+            ->value('retry_signal');
+
+        if (! is_string($resolved)) {
+            throw NoAwaitingRetrySignalException::for($this->flowRun);
+        }
+
+        return $resolved;
     }
 
     /**

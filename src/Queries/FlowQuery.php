@@ -60,6 +60,13 @@ readonly class FlowQuery
         return $this;
     }
 
+    public function whereId(string ...$ids): static
+    {
+        $this->builder->whereIn('id', $ids);
+
+        return $this;
+    }
+
     /**
      * Runs whose wait for a signal is still open, whichever seam opened it: an
      * explicit awaitSignal(), or a step parked by retryOnSignal(). A null $name
