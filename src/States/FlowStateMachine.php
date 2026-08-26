@@ -37,11 +37,15 @@ class FlowStateMachine implements StateMachine
             $run->started_at = $now;
         }
 
-        if ($to === FlowStatus::Cancelled) {
+        // Both are written once and never again. A same-state terminal transition is a
+        // legal no-op that at-least-once delivery does reach — a duplicated batch
+        // callback lands a run that is already Cancelled — and rewriting the marks there
+        // would move the moment the run actually ended to whenever the duplicate arrived.
+        if ($to === FlowStatus::Cancelled && $run->cancelled_at === null) {
             $run->cancelled_at = $now;
         }
 
-        if ($to->isTerminal()) {
+        if ($to->isTerminal() && $run->finished_at === null) {
             $run->finished_at = $now;
         }
 

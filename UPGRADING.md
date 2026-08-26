@@ -380,7 +380,8 @@ live raises, so the close is retried rather than dropped.
 
 **A same-state transition is checked too.** It used to return before touching the database, which is
 precisely how a stale instance slipped past. It is now a conditional write like any other, and one
-that has genuinely lost raises rather than reporting success.
+that has genuinely lost raises rather than reporting success. `cancelled_at` and `finished_at` are
+still written once and never again, so a landing that repeats does not move the moment the run ended.
 
 What this does **not** close: two workers that both legitimately see `running` both write
 successfully, because the status does not change between them. That is ownership, not transition

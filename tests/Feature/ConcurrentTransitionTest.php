@@ -239,6 +239,25 @@ it('retries a child close it lost while the child is still live', function () {
     expect(SagaFlow::findRun($child->id)->status)->toBe(FlowStatus::Waiting);
 });
 
+it('keeps the moment a run ended when the same landing arrives twice', function () {
+    $run = SagaFlow::create(SignalOnlyWorkflow::class)->runSync();
+
+    SagaFlow::loadFlow($run->id)->cancel('operator');
+
+    $landed = SagaFlow::findRun($run->id);
+
+    $this->travel(5)->minutes();
+
+    // A landing that repeats is legal and writes, since the row is where the caller
+    // believes it is. What it must not do is move the marks of when the run ended.
+    app(StateMachine::class)->transition(SagaFlow::findRun($run->id), FlowStatus::Cancelled);
+
+    $after = SagaFlow::findRun($run->id);
+
+    expect($after->finished_at->equalTo($landed->finished_at))->toBeTrue()
+        ->and($after->cancelled_at->equalTo($landed->cancelled_at))->toBeTrue();
+});
+
 it('leaves an ordinary transition alone', function () {
     [, $current] = staleAndFresh();
 
