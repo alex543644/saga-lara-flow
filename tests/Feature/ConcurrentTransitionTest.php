@@ -12,6 +12,7 @@ use DiscoveryUkraine\SagaLaraFlow\Jobs\CancelChildWorkflowJob;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\FlowExecutor;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\SignalOnlyWorkflow;
+use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\StealsRunCompensation;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\StolenRollbackWorkflow;
 
 /**
@@ -23,6 +24,10 @@ use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\StolenRollbackWorkflow;
  * Both sides are staged from one process here — two independently loaded instances,
  * one of which moves the row — so the interleaving is exact instead of hoped for.
  */
+beforeEach(function () {
+    StealsRunCompensation::reset();
+});
+
 function staleAndFresh(): array
 {
     $run = SagaFlow::create(SignalOnlyWorkflow::class)->runSync();
@@ -218,6 +223,20 @@ it('ends a child close cleanly when the child is taken mid-rollback', function (
     dispatch_sync(new CancelChildWorkflowJob($child->id, FlowStatus::Cancelled, true));
 
     expect(SagaFlow::findRun($child->id)->status)->toBe(FlowStatus::Failed);
+});
+
+it('retries a child close it lost while the child is still live', function () {
+    $child = SagaFlow::create(StolenRollbackWorkflow::class)->runSync();
+
+    StealsRunCompensation::$leaveAs = FlowStatus::Waiting;
+
+    // Losing the child to a move that leaves it live is not a closed child. This job is
+    // the only thing applying the parent's close policy, so ending quietly here would
+    // strand a running child under a terminal parent with nothing left to close it.
+    expect(fn () => dispatch_sync(new CancelChildWorkflowJob($child->id, FlowStatus::Cancelled, true)))
+        ->toThrow(ConcurrentFlowTransitionException::class);
+
+    expect(SagaFlow::findRun($child->id)->status)->toBe(FlowStatus::Waiting);
 });
 
 it('leaves an ordinary transition alone', function () {

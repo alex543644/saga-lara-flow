@@ -58,7 +58,7 @@ class FlowExecutor
             // every caller do the right thing without knowing about the race: a job ends
             // cleanly, runSync() returns the run as the winner left it, and a parent
             // awaiting it as a child reads its status and resolves accordingly.
-            return $flowRun->fresh() ?? $flowRun;
+            return $this->reread($flowRun);
         }
     }
 
@@ -254,8 +254,18 @@ class FlowExecutor
         try {
             return $this->expireRunInner($flowRun);
         } catch (ConcurrentFlowTransitionException) {
-            return $flowRun->fresh() ?? $flowRun;
+            return $this->reread($flowRun);
         }
+    }
+
+    /**
+     * Read the run as the winner of a refused transition left it. From the writer: the
+     * whole point of this read is the state that was just committed, and it is what a
+     * caller — a parent resolving this run as a child among them — decides on.
+     */
+    private function reread(FlowRun $flowRun): FlowRun
+    {
+        return $flowRun->newQuery()->useWritePdo()->find($flowRun->getKey()) ?? $flowRun;
     }
 
     /**

@@ -11,6 +11,7 @@ use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\ActionRecorder;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\AnomalyLog;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\SignalRecorder;
+use Illuminate\Support\Arr;
 use Throwable;
 
 class FlowStateMachine implements StateMachine
@@ -43,6 +44,11 @@ class FlowStateMachine implements StateMachine
         if ($to->isTerminal()) {
             $run->finished_at = $now;
         }
+
+        // Set here rather than left to the builder, which fills the column in the SQL
+        // without telling the model. Otherwise the instance — and every lifecycle event
+        // raised off it a moment later — keeps the timestamp of the previous write.
+        $run->updated_at = $now;
 
         try {
             $to->isTerminal()
@@ -104,21 +110,22 @@ class FlowStateMachine implements StateMachine
             return;
         }
 
+        // Read from the writer. This read decides whether the write counts and names the
+        // winner in the log and the exception; a lagging replica would answer with the
+        // very status the guard was fencing against.
+        /** @var ?FlowStatus $actual */
+        $actual = $run->newQuery()
+            ->useWritePdo()
+            ->whereKey($run->getKey())
+            ->value('status');
+
         // Zero rows is not proof the guard failed: MySQL counts rows it changed, not
         // rows it matched, so an update whose every value already equals what is stored
         // reports zero there and one on SQLite and PostgreSQL. Only a same-state
-        // transition with nothing else to write can land in that shape — status is what
-        // it already is, and updated_at, stored to the second, is rewritten inside that
-        // same second. There the row is read back, and from the writer: this read
-        // decides whether the write counts, and a lagging replica would answer with the
-        // very status the guard was fencing against.
-        $ambiguous = $from === $to && $dirty === [];
-
-        /** @var ?FlowStatus $actual */
-        $actual = $run->newQuery()
-            ->whereKey($run->getKey())
-            ->when($ambiguous, fn ($query) => $query->useWritePdo())
-            ->value('status');
+        // transition with nothing of its own to write can land in that shape — status is
+        // what it already is, and updated_at, stored to the second, is rewritten inside
+        // that same second.
+        $ambiguous = $from === $to && Arr::except($dirty, $run->getUpdatedAtColumn()) === [];
 
         if ($ambiguous && $actual === $from) {
             return;

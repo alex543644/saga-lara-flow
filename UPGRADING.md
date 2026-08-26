@@ -369,12 +369,14 @@ resolve them.
 
 Two things follow:
 
-**The engine absorbs it; `FlowHandle` does not.** `FlowExecutor::drive()`, `FlowExecutor::expireRun()`,
-`CancelChildWorkflowJob` and the queued rollback's batch continuation catch it and stop: a job ends cleanly rather than
+**The engine absorbs it; `FlowHandle` does not.** `FlowExecutor::drive()`, `FlowExecutor::expireRun()`
+and the queued rollback's batch continuation catch it and stop: a job ends cleanly rather than
 retrying, `runSync()` returns the run in the state the winner left it, and a parent awaiting the run
 as a child reads its status and resolves accordingly. `FlowHandle::cancel()` and `compensate()`
 deliberately let it through — see item 16. A rollback an operator asked for raises from its landing
-too, for the same reason: nobody else is waiting on that answer.
+too, for the same reason: nobody else is waiting on that answer. `CancelChildWorkflowJob` stops only
+once the child it was sent to close is genuinely closed; losing it to something that leaves the child
+live raises, so the close is retried rather than dropped.
 
 **A same-state transition is checked too.** It used to return before touching the database, which is
 precisely how a stale instance slipped past. It is now a conditional write like any other, and one

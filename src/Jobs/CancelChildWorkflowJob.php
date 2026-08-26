@@ -57,10 +57,18 @@ class CancelChildWorkflowJob implements ShouldQueue
 
         try {
             $this->close($executor, $sagaRunner, $repository, $stateMachine, $lifecycle, $tenancy, $child);
-        } catch (ConcurrentFlowTransitionException) {
-            // The per-run lock covers jobs and nothing else, so an operator reaching the
-            // child directly is an ordinary race. Failing here would retry a job with
-            // nothing left to do.
+        } catch (ConcurrentFlowTransitionException $lost) {
+            // The per-run lock covers jobs and nothing else, so losing the child to an
+            // operator or to a sync drive under the parent's own replay is an ordinary
+            // race. Ending quietly is only right once the child is genuinely closed, or
+            // once another rollback owns its landing — a child still live is one this
+            // job was sent to close, and dropping it here would strand it with a
+            // terminal parent and no close policy left to apply.
+            $current = $repository->find($this->childFlowRunId);
+
+            if ($current !== null && ! $current->isTerminal() && $current->status !== FlowStatus::Cancelling) {
+                throw $lost;
+            }
         }
     }
 
