@@ -107,9 +107,9 @@ class FlowListCommand extends Command
     /**
      * The status cell, with the signal a parked run waits on appended to it.
      *
-     * Only a Waiting run is annotated: a step keeps its AwaitingRetry status after the
-     * run around it is cancelled, and naming a signal there would send the operator
-     * after a delivery a terminal run refuses.
+     * Only a Waiting run is annotated: a run mid-rollback is Cancelling, which is not
+     * terminal, so it still holds its AwaitingRetry step — and naming a signal there
+     * would send the operator after a delivery the run no longer accepts.
      *
      * @param  Collection<string, string>  $parked
      */

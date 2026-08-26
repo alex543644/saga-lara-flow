@@ -15,12 +15,18 @@ enum FlowStatus: string
 
     public function isTerminal(): bool
     {
-        return in_array($this, [
-            self::Completed,
-            self::Failed,
-            self::Cancelled,
-            self::Expired,
-        ], true);
+        return in_array($this, self::terminal(), true);
+    }
+
+    /**
+     * The statuses a run never leaves. Single source of truth for isTerminal() and
+     * for the sweeps that must not pick up work belonging to a finished run.
+     *
+     * @return array<int, self>
+     */
+    public static function terminal(): array
+    {
+        return [self::Completed, self::Failed, self::Cancelled, self::Expired];
     }
 
     /**

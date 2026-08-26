@@ -66,8 +66,9 @@ readonly class FlowQuery
      * matches any name.
      *
      * Only whereAwaitingRetrySignal() tells the two seams apart. Matching is on the
-     * signal row rather than the run's status, so compose with signalable() to skip
-     * runs that have already finished.
+     * signal row rather than the run's status. A run settles its open waits as it
+     * finishes, so it leaves this filter on its own; compose with signalable() to skip
+     * the rows left behind by runs that finished before that behaviour existed.
      */
     public function whereAwaitingSignal(?string $name = null): static
     {

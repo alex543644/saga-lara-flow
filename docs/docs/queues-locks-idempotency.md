@@ -66,6 +66,32 @@ action steps (sequential and parallel) and compensations, each keyed on its own 
   giving up and letting the queue retry it later.
 - **`prefix`** — string prefix for every lock key (namespacing when the store is shared).
 
+### What the lock does not cover
+
+The lock is job middleware, so it orders jobs against each other and nothing else. Three writers sit
+outside it: `saga-flow:cancel`, a host calling `FlowHandle::cancel()` or `compensate()`, and the
+monitor's sweep, which expires runs inline in `saga-flow:monitor`. A TTL is also a ceiling, not a
+promise — a job that outruns `workflow_ttl_seconds` keeps working while its lock is released.
+
+What covers those is the write itself. Every status write in the package — a run's transition, a step's
+claim, an outcome — is a conditional `UPDATE` on the value its caller read before deciding, which is
+the only form every supported driver enforces atomically. A writer whose row has moved on writes
+nothing and is told so, instead of overwriting whoever got there first:
+
+```php
+try {
+    SagaFlow::loadFlow($runId)->cancel('superseded');
+} catch (ConcurrentFlowTransitionException $e) {
+    // The run moved while you were deciding — the message names where it is now.
+}
+```
+
+The engine absorbs the same refusal on its own paths: a drive that loses simply stops, so the job
+ends cleanly rather than retrying.
+
+Two workers that both legitimately hold a run as `running` are a different problem — nothing changes
+between them for a condition to catch. That is what the lock is for.
+
 ## When a step is quietly skipped
 
 Three things can happen to a worker without failing its job: it loses the claim to whoever already
@@ -82,9 +108,12 @@ package keeps a second journal for them:
 ```
 
 Grep for `claim_lost`, `outcome_rejected` and `batch_finished_early`; each line carries the run id,
-row id, sequence and class. They are not written to `flow_events`, which records the run's business
-history — an abandoned attempt changed nothing in it. See
-[Reclaim & recovery](./reclaim-and-recovery.md) for what each one means and what to do about it.
+row id, sequence and class. A refused run transition is journalled here too, as `transition_lost`,
+carrying the status observed, the one intended and the one actually holding the row — it is the one
+entry that is not always quiet, since `FlowHandle` raises rather than absorbing it. None of them are
+written to `flow_events`, which records the run's business history — an abandoned attempt changed
+nothing in it. See [Reclaim & recovery](./reclaim-and-recovery.md) for what each one means and what
+to do about it.
 
 :::tip A lock TTL is not the same as reclaim
 `action_ttl_seconds` does not answer "when can a stuck `Running` step be retried". It governs a

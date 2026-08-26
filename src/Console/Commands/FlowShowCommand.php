@@ -123,9 +123,10 @@ class FlowShowCommand extends Command
      * is spent (an unset max is unbounded), plus the current wait deadline while the
      * step is actually parked. Steps without a retry policy stay blank.
      *
-     * The deadline shows only while the run itself is Waiting: a cancelled run keeps
-     * both the AwaitingRetry step and its timeout_at, and "until ..." there would be a
-     * countdown for a wait nothing will resolve.
+     * The deadline shows only while the run itself is Waiting. A run mid-rollback is
+     * Cancelling, which is not terminal, so it still holds both the AwaitingRetry step
+     * and its timeout_at — and "until ..." there would be a countdown for a wait
+     * nothing will resolve.
      *
      * @param  array<int, FlowSignal>  $signals
      */

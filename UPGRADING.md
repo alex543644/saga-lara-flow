@@ -57,18 +57,21 @@ They are complementary: reclaim retries, the monitor gives up. Neither runs unle
 `action_runs` already had. It runs from the package like every other migration — do not
 `vendor:publish` it.
 
-### 3. Six transitions no longer raise Eloquent model events
+### 3. Status transitions no longer raise Eloquent model events
 
-`startAction()` / `startCompensation()` and the four outcome writes
-(`completeAction()`, `failAction()`, `completeCompensation()`, `failCompensation()`) are now
-conditional `UPDATE` statements, the same shape (and for the same reason — the only form every
-supported driver enforces atomically) as the signal transitions changed in 1.1.0.
+Every status write the engine makes is now a conditional `UPDATE` — the same shape (and for the same
+reason: the only form every supported driver enforces atomically) as the signal transitions changed
+in 1.1.0. That covers `startAction()` / `startCompensation()`, the four outcome writes
+(`completeAction()`, `failAction()`, `completeCompensation()`, `failCompensation()`), and — see item
+15 — every transition of a `flow_runs` row.
 
-The consequence, exactly as documented then: an **observer** registered on a swapped-in
-`models.action_run` or `models.compensation_run` no longer sees `updating`/`updated` for these
-transitions. Nothing is lost, though — each still records its own package event and `flow_events`
-entry whenever it actually writes: `ActionStarted` (`action.started`, unchanged), `ActionCompleted`,
-`ActionFailed`, `CompensationCompleted`, `CompensationFailed`, and the new `CompensationStepStarted`
+The consequence, exactly as documented in 1.1.0: an **observer** registered on a swapped-in
+`models.flow_run`, `models.action_run` or `models.compensation_run` no longer sees
+`updating`/`updated` for these transitions. Nothing is lost, though — each still records its own
+package event and `flow_events` entry whenever it actually writes: the flow lifecycle events
+(`FlowStarted`, `FlowWaiting`, `FlowResumed`, `FlowCompleted`, `FlowFailed`, `FlowCancelled`,
+`FlowExpired`), `ActionStarted` (`action.started`, unchanged), `ActionCompleted`, `ActionFailed`,
+`CompensationCompleted`, `CompensationFailed`, and the new `CompensationStepStarted`
 (`compensation.step_started` — distinct from `CompensationStarted`, which marks the whole rollback
 beginning once per run, not once per compensation). Listen to those, or read `flow_events`, instead
 of Eloquent hooks.
@@ -89,8 +92,11 @@ not touch `attempts`. `ActionRecorder::expireAction()` is conditional for the sa
 other side: a step that completes just before the sweep reaches it is not demoted to `Expired`. It
 now returns `bool`, and the monitor counts and wakes only for an expiry it actually won.
 
-Every quiet path — a lost claim, a rejected outcome, a batch closed early — is logged, since nothing
-else records them. See `logging.anomaly_level` in item 7.
+Every one of these paths — a lost claim, a rejected outcome, a batch closed early, and now a refused
+run transition (item 15) — is logged, since nothing else records them. The first three are also
+quiet: they never fail a job. The fourth is the exception, and only on one surface — the engine
+absorbs it, but `FlowHandle` lets it reach the caller, because an operator whose cancellation did not
+happen has to be told. See `logging.anomaly_level` in item 7.
 
 ### 5. `ActionRunRepository` gained one method
 
@@ -267,6 +273,136 @@ So while pre-upgrade rows are still being read, code that consumes a scalar resu
 shapes. Draining the affected parents before upgrading avoids the mixed period entirely. Note also
 that this release does not rescue a parent already parked over such a child and written against the
 unwrapped shape — that parent was failing before the upgrade and still fails after it.
+
+### 13. A finished run no longer leaves live-looking steps and waits
+
+`ActionStatus::Cancelled` was declared but never written. Cancelling, expiring or closing a run only
+touched its `flow_runs` row, so a run that ended days ago kept steps reporting `pending`, `running`
+or `awaiting_retry`, and wait-signals reporting `waiting`.
+
+Every terminal transition now settles what the run was still holding: steps in those three statuses
+become `cancelled`, and open wait-markers become `cancelled` too. Steps that had already reached an
+outcome — `completed`, `failed`, `optional_failed`, `expired` — are untouched, so a cancelled run
+still shows what actually ran. `SignalStatus::Cancelled` is new; a `match` over `SignalStatus` that
+was exhaustive before now needs that arm.
+
+Four things to check:
+
+**Queries filtered by step or signal status.** A dashboard counting `action_runs` where
+`status = 'running'` stops counting runs that ended. That was the point — those counts were wrong —
+but a query written to compensate for it (joining `flow_runs` to exclude terminal runs) is now
+redundant rather than harmful.
+
+**`FlowQuery::whereAwaitingSignal()` and `whereAwaitingRetrySignal()`** stop matching a run once it
+finishes, because it no longer holds the row they filter on. That is true of runs that finish on this
+release; rows left behind by runs that finished earlier still carry `waiting` and `awaiting_retry`,
+and their runs still match. Keep composing with `signalable()` while any of those remain — the SQL
+below clears them if you would rather be done with it.
+
+**A worker holding a `Running` step when its run is cancelled** races the settlement, and both
+orders leave the row consistent. If the settlement lands first the step is `cancelled` and the
+worker's outcome is refused, logged as `outcome_rejected` — the same fencing the monitor's expiry
+already used. If the worker lands first the step keeps the outcome it earned and the settlement
+passes over it. Expect `outcome_rejected` lines whenever runs are cancelled while steps are
+genuinely in flight.
+
+A refused outcome is not stored: before this release the late worker's result landed in
+`action_runs.result`, and now the `outcome_rejected` line — the run, the step, its sequence and
+class, and which outcome was refused — is what records it. If the step reaches an external system,
+that log line is the pointer to reconcile from.
+
+**Rows written before the upgrade keep their old status.** They are not migrated: the package's
+migrations run automatically on `php artisan migrate`, and rewriting a host's history without being
+asked is not something a migration should do. They are harmless — no sweep selects them any more (see
+below) — but `saga-flow:show` will keep rendering them as they are. To settle them yourself:
+
+```sql
+UPDATE saga_action_runs
+   SET status = 'cancelled'
+ WHERE status IN ('pending', 'running', 'awaiting_retry')
+   AND flow_run_id IN (
+       SELECT id FROM saga_flow_runs
+        WHERE status IN ('completed', 'failed', 'cancelled', 'expired')
+   );
+
+UPDATE saga_flow_signals
+   SET status = 'cancelled'
+ WHERE status = 'waiting'
+   AND wait_sequence IS NOT NULL
+   AND flow_run_id IN (
+       SELECT id FROM saga_flow_runs
+        WHERE status IN ('completed', 'failed', 'cancelled', 'expired')
+   );
+```
+
+Adjust the table names if you set `database.table_prefix`.
+
+### 14. No sweep selects work belonging to a finished run
+
+Four scans gained the same condition: the doctor's `dueForRepair()` and `dueForStaleRunningRepair()`,
+and the monitor's `dueForExpiration()` and `dueForTimeout()`.
+
+Each of them rejected such a row anyway, but only *after* spending a slot on it and *before* any
+counter could hold it off — the doctor returns ahead of its throttle, and the monitor has no counter
+at all. Ordered oldest-first and never changing, an unsettled row sat at the head of every batch for
+ever; enough of them and a pass filled up with dead rows and reached nothing live, while still
+reporting success.
+
+Item 13 stops new ones from appearing. This stops the ones already in your database from costing
+anything, which is why no data migration is needed.
+
+`FlowStatus::terminal()` is new, listing the four statuses a run never leaves. `isTerminal()` now
+reads from it.
+
+### 15. A run transition is refused if the row moved on
+
+Every transition of a `flow_runs` row now writes conditionally, on the status the caller read before
+deciding. If the row is no longer there, nothing is written and the transition raises
+`ConcurrentFlowTransitionException`.
+
+The hole it closes: nothing serialises an operator against a worker. The queue's per-run lock covers
+jobs; it does not cover `saga-flow:cancel`, a host calling `FlowHandle::cancel()`, or the monitor's
+sweep, which expires runs inline. Each side holds its own `FlowRun` instance, and whichever saved
+last used to win outright — up to a worker writing `running` over a run an operator had already
+cancelled, leaving a run that can never finish because its steps are settled and replay will not
+resolve them.
+
+Two things follow:
+
+**The engine absorbs it; `FlowHandle` does not.** `FlowExecutor::drive()`, `FlowExecutor::expireRun()`,
+`CancelChildWorkflowJob` and the queued rollback's batch continuation catch it and stop: a job ends cleanly rather than
+retrying, `runSync()` returns the run in the state the winner left it, and a parent awaiting the run
+as a child reads its status and resolves accordingly. `FlowHandle::cancel()` and `compensate()`
+deliberately let it through — see item 16. A rollback an operator asked for raises from its landing
+too, for the same reason: nobody else is waiting on that answer.
+
+**A same-state transition is checked too.** It used to return before touching the database, which is
+precisely how a stale instance slipped past. It is now a conditional write like any other, and one
+that has genuinely lost raises rather than reporting success.
+
+What this does **not** close: two workers that both legitimately see `running` both write
+successfully, because the status does not change between them. That is ownership, not transition
+ordering, and `WithoutOverlapping` on `run:{id}` remains what covers it.
+
+Refused transitions are logged as `transition_lost`, with the status observed, the one intended, and
+the one actually holding the row. A refusal leaves the `FlowRun` instance that asked for it exactly
+as it was, so a caller that catches one can read the run's real status off its own model and act on
+it — or simply try again.
+
+### 16. `FlowHandle::cancel()` can now throw a second exception
+
+`cancel()` and `compensate()` already raised `CannotCancelTerminalFlowException` when the run they
+hold is terminal. They can now also raise `ConcurrentFlowTransitionException`, when the run was still
+live as far as the handle knew but moved underneath it.
+
+If you catch around either call, catch both. They stay distinct on purpose:
+`CannotCancelTerminalFlowException` means the handle already knew the run was finished;
+`ConcurrentFlowTransitionException` means it lost a race and the run is now in some other state,
+which the message names.
+
+Note that neither is a subclass of `InvalidTransitionException`, and `ConcurrentFlowTransitionException`
+is deliberately not one either: that exception means the state graph forbids the move, and repeating
+it cannot help, whereas a lost race is transient and re-reading the run is the sensible response.
 
 ### Recommended while you are here
 

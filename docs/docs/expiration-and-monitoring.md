@@ -71,6 +71,10 @@ This is deliberate. Keeping the sweep the single writer of a wait's status is wh
 seam safe to run concurrently. If your deadline is a hard business boundary rather than a safety net, enforce it in the
 workflow — the payload of a late signal can be checked against a deadline you captured with `sideEffect()`.
 
+A sweep only ever looks at work belonging to a run that is still going. A run that has finished settles its own steps
+and waits as it ends (see [statuses](./statuses.md)), and the scan skips whatever was left unsettled before that, so a
+batch is always filled with candidates a sweep can actually act on.
+
 ## Repair (the doctor)
 
 Separate from expiration: the **doctor** recovers a run whose progress was lost to a *dropped job* — an action that
@@ -97,7 +101,8 @@ Every parameter:
 - **`grace_seconds`** — minimum age, **in seconds**, before an entity is even *considered* stuck. This guards against
   racing a job that is simply still in flight: the doctor ignores anything younger than this, so a slow-but-alive action
   is left alone. Raise it if your jobs legitimately run long.
-- **`batch_size`** — how many candidate entities one repair pass inspects at most.
+- **`batch_size`** — how many candidate entities one repair pass inspects at most. Only entities of runs that have not
+  finished are counted against it.
 - **`max_attempts`** — per-entity cap. After this many repair attempts the doctor gives up on that entity and leaves it
   alone (re-drive it by hand with `saga-flow:kick`).
 - **`backoff`** — exponential backoff between repair attempts for a single entity, clamped between

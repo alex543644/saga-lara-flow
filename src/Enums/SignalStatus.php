@@ -8,4 +8,5 @@ enum SignalStatus: string
     case Received = 'received';
     case Consumed = 'consumed';
     case TimedOut = 'timed_out';
+    case Cancelled = 'cancelled';
 }

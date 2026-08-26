@@ -8,6 +8,7 @@ use DiscoveryUkraine\SagaLaraFlow\Contracts\Serializer;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\StateMachine;
 use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\RunMode;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\ConcurrentFlowTransitionException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\FlowExpiredException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\HistoryContractMismatchException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\Internal\FlowSuspended;
@@ -46,11 +47,19 @@ class FlowExecutor
      */
     public function drive(FlowRun $flowRun, RunMode $mode): FlowRun
     {
-        return $this->tenancy->for(
-            $flowRun,
-            $flowRun->workflow_class,
-            fn (): FlowRun => $this->driveInner($flowRun, $mode),
-        );
+        try {
+            return $this->tenancy->for(
+                $flowRun,
+                $flowRun->workflow_class,
+                fn (): FlowRun => $this->driveInner($flowRun, $mode),
+            );
+        } catch (ConcurrentFlowTransitionException) {
+            // Somebody else owns this run now. Returning it rather than throwing lets
+            // every caller do the right thing without knowing about the race: a job ends
+            // cleanly, runSync() returns the run as the winner left it, and a parent
+            // awaiting it as a child reads its status and resolves accordingly.
+            return $flowRun->fresh() ?? $flowRun;
+        }
     }
 
     /**
@@ -91,6 +100,10 @@ class FlowExecutor
                 return $this->suspend($flowRun);
             } catch (InternalFlowControl) {
                 return $this->suspend($flowRun);
+            } catch (ConcurrentFlowTransitionException $lost) {
+                // Must precede the catch below: compensating over a refused transition
+                // would roll back a run this pass no longer owns.
+                throw $lost;
             } catch (Throwable $exception) {
                 return $this->failAndCompensate($flowRun, $exception, $mode);
             }
@@ -231,9 +244,24 @@ class FlowExecutor
      * (queued) and finalize as Expired — or, with nothing to undo, expire directly.
      * Shared by the monitor's sweep (FlowMonitor::expireRun) and the lazy drive check.
      *
+     * Guarded separately from drive(), because the sweep reaches it directly: one run
+     * claimed by someone else in the meantime must not end the whole pass.
+     *
      * @throws Throwable
      */
     public function expireRun(FlowRun $flowRun): FlowRun
+    {
+        try {
+            return $this->expireRunInner($flowRun);
+        } catch (ConcurrentFlowTransitionException) {
+            return $flowRun->fresh() ?? $flowRun;
+        }
+    }
+
+    /**
+     * @throws Throwable
+     */
+    private function expireRunInner(FlowRun $flowRun): FlowRun
     {
         $primary = $this->exceptionToArray(FlowExpiredException::forFlowRun($flowRun));
 

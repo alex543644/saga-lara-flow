@@ -1,6 +1,7 @@
 <?php
 
 use DiscoveryUkraine\SagaLaraFlow\Contracts\FlowRepository;
+use DiscoveryUkraine\SagaLaraFlow\Enums\ActionStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\Facades\SagaFlow;
 use DiscoveryUkraine\SagaLaraFlow\Models\ActionRun;
@@ -9,6 +10,7 @@ use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\CompensationLog;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\ManualCompensateWorkflow;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\SignalOnlyWorkflow;
 use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\TwoStepWorkflow;
+use Illuminate\Support\Facades\Artisan;
 
 function cliPendingRun(): FlowRun
 {
@@ -58,6 +60,28 @@ it('cancels a non-terminal run', function () {
     $this->artisan('saga-flow:cancel', ['run' => $run->id])->assertSuccessful();
 
     expect($run->fresh()->status)->toBe(FlowStatus::Cancelled);
+});
+
+it('shows the steps of a cancelled run as settled', function () {
+    $run = SagaFlow::create(SignalOnlyWorkflow::class)->runSync();
+
+    ActionRun::create([
+        'flow_run_id' => $run->id,
+        'sequence' => 1,
+        'action_class' => 'App\\Actions\\Ship',
+        'status' => ActionStatus::Pending,
+        'attempts' => 0,
+    ]);
+
+    $this->artisan('saga-flow:cancel', ['run' => $run->id])->assertSuccessful();
+
+    Artisan::call('saga-flow:show', ['run' => $run->id]);
+
+    // Matched on the table rows, not the whole output: the event log below them still
+    // says flow.waiting, which is history and stays true.
+    expect(Artisan::output())
+        ->toMatch('/\|\s+1\s+\|\s+cancelled\s+\|/')
+        ->toMatch('/\|\s+go\s+\|\s+cancelled\s+\|/');
 });
 
 it('warns when cancelling a terminal run', function () {

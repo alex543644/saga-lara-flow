@@ -7,6 +7,7 @@ use DiscoveryUkraine\SagaLaraFlow\Contracts\FlowRepository;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\StateMachine;
 use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\RunMode;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\ConcurrentFlowTransitionException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\ParentClosedException;
 use DiscoveryUkraine\SagaLaraFlow\Middleware\LockMiddlewareFactory;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
@@ -54,6 +55,27 @@ class CancelChildWorkflowJob implements ShouldQueue
             return;
         }
 
+        try {
+            $this->close($executor, $sagaRunner, $repository, $stateMachine, $lifecycle, $tenancy, $child);
+        } catch (ConcurrentFlowTransitionException) {
+            // The per-run lock covers jobs and nothing else, so an operator reaching the
+            // child directly is an ordinary race. Failing here would retry a job with
+            // nothing left to do.
+        }
+    }
+
+    /**
+     * @throws Throwable
+     */
+    private function close(
+        FlowExecutor $executor,
+        SagaRunner $sagaRunner,
+        FlowRepository $repository,
+        StateMachine $stateMachine,
+        FlowLifecycleRecorder $lifecycle,
+        TenancyManager $tenancy,
+        FlowRun $child,
+    ): void {
         $tenancy->for($child, $child->workflow_class, function () use (
             $executor,
             $sagaRunner,

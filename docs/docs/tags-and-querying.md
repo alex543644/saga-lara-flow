@@ -111,8 +111,10 @@ it `TimedOut`, while the parked step keeps its `awaiting_retry` status until rep
 In that gap only `whereAwaitingRetrySignal()` matches — which is what makes it the filter that finds
 a run whose signal arrived but whose resume never did.
 
-Both match on the rows a run holds, not on its status: a run cancelled while parked still carries
-the wait and the parked step. Compose with `signalable()` to exclude those.
+Both read the rows a run holds rather than the run's own status. A run that finishes settles its open
+wait and its parked step alike (see [statuses](./statuses.md)), so it drops out of both filters on its
+own. Rows left behind by runs that finished before this behaviour existed still carry `waiting` and
+`awaiting_retry`, and their runs still match — compose with `signalable()` while any of those remain.
 
 ### Terminals
 

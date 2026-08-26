@@ -20,6 +20,14 @@
             <directory>tests</directory>
         </testsuite>
     </testsuites>
+    <php>
+        <!--
+            Each test boots its own Testbench app against an in-memory database, so the
+            suite's peak grows with the number of tests. Pinning the limit here keeps it
+            independent of whatever php.ini a machine or a CI image happens to set.
+        -->
+        <ini name="memory_limit" value="512M"/>
+    </php>
     <logging>
         <junit outputFile="build/report.junit.xml"/>
     </logging>
