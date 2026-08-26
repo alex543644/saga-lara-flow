@@ -23,7 +23,7 @@ use Illuminate\Support\Carbon;
  * @property ?int $retry_signal_max_attempts
  * @property ?int $parallel_group
  * @property ?array<int|string, mixed> $arguments
- * @property ?array<int|string, mixed> $result
+ * @property mixed $result
  * @property ?array<int|string, mixed> $exception
  * @property int $attempts
  * @property bool $queue_attempts_exhausted

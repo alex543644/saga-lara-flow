@@ -237,6 +237,37 @@ Tag writing is otherwise unchanged: one value per key per run, last write wins. 
 normalisation now also sits on `Models\FlowTag` as a cast, so a `models.flow_tag` replacement should
 extend that model rather than reimplement it.
 
+### 12. A scalar workflow result is no longer wrapped
+
+`flow_runs.result` is a JSON column, and a workflow returning anything other than an array had that
+value stored as `{"value": ...}`. Nothing reversed the wrapper, so a parent calling
+`$this->child(...)->run()` on a child returning an `int` got `['value' => 42]`, and a host reading
+`$run->result` got the same.
+
+The result is now written the way an action result already was — straight through the serializer,
+with no envelope. A JSON column stores a bare scalar fine, and `Serializer::deserialize()` passes
+non-arrays through untouched, so the child seam resolves the value the child actually returned.
+
+Two things to check:
+
+**Code that unwrapped by hand.** For a run completed on this release, `$run->result['value']` is now
+just `$run->result`. Workflows returning an array are unaffected — those were never wrapped. Runs
+completed before the upgrade are the caveat below.
+
+**Rows completed before the upgrade keep their envelope, permanently.** They are neither migrated nor
+unwrapped on read: a wrapped `42` and a workflow that legitimately returned `['value' => 42]` are
+stored identically, so nothing automatic can tell them apart without corrupting the second case.
+
+That is not a one-off. `$run->result` on a pre-upgrade run returns the wrapper for as long as the row
+exists. And because a parent replays `handle()` from the top on every resume, a parent whose child
+completed before the upgrade resolves that child to the wrapper on **every** replay, not only the
+first one after the deploy.
+
+So while pre-upgrade rows are still being read, code that consumes a scalar result has to accept both
+shapes. Draining the affected parents before upgrading avoids the mixed period entirely. Note also
+that this release does not rescue a parent already parked over such a child and written against the
+unwrapped shape — that parent was failing before the upgrade and still fails after it.
+
 ### Recommended while you are here
 
 - **Decide how a killed worker should be recovered** — see item 1. Leaving both reclaim and the

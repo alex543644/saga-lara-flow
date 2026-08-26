@@ -587,7 +587,7 @@ $run = SagaFlow::create(CheckoutWorkflow::class)
     ->runSync();
 
 $run->status;   // FlowStatus::Completed
-$run->result;   // the array handle() returned
+$run->result;   // the value handle() returned
 ```
 
 The queued and synchronous paths are guaranteed to reach the **same** final database state.

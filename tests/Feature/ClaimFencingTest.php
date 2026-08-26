@@ -275,9 +275,8 @@ it('returns the fallback when an optional sync step is expired mid-run', functio
 
     // The whole point of distinguishing the two: an optional step resolves its
     // fallback on replay, which a thrown invariant error would have skipped.
-    // A scalar run result is stored wrapped (FlowExecutor::normalizeResult()).
     expect($run->status)->toBe(FlowStatus::Completed)
-        ->and($run->result)->toBe(['value' => 'fallback']);
+        ->and($run->result)->toBe('fallback');
 });
 
 // --- The claim and its records are one unit ---

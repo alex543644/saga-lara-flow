@@ -92,7 +92,7 @@ it('leaves an overdue wait open until the sweep runs', function () {
     $final = SagaFlow::findRun($run->id);
 
     expect($final->status)->toBe(FlowStatus::Completed)
-        ->and($final->result)->toBe(['value' => false])
+        ->and($final->result)->toBeFalse()
         ->and($final->signals()->first()->status)->toBe(SignalStatus::TimedOut);
 });
 
@@ -115,6 +115,6 @@ it('accepts a signal delivered after its deadline but before the sweep', functio
     $final = SagaFlow::findRun($run->id);
 
     expect($final->status)->toBe(FlowStatus::Completed)
-        ->and($final->result)->toBe(['value' => true])
+        ->and($final->result)->toBeTrue()
         ->and($final->signals()->first()->status)->toBe(SignalStatus::Consumed);
 });

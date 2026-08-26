@@ -165,7 +165,7 @@ class FlowExecutor
 
     private function completeFlow(FlowRun $flowRun, mixed $result): FlowRun
     {
-        $flowRun->result = $this->normalizeResult($result);
+        $flowRun->result = $this->serializer->serialize($result);
 
         $flowRun->markCompleted();
 
@@ -266,19 +266,5 @@ class FlowExecutor
         return (bool) config('saga-lara-flow.monitor.expiration.enabled')
             && $flowRun->expires_at !== null
             && $flowRun->expires_at->lessThanOrEqualTo(now());
-    }
-
-    /**
-     * @return array<int|string, mixed>|null
-     */
-    private function normalizeResult(mixed $result): ?array
-    {
-        $serialized = $this->serializer->serialize($result);
-
-        if ($serialized === null) {
-            return null;
-        }
-
-        return is_array($serialized) ? $serialized : ['value' => $serialized];
     }
 }
