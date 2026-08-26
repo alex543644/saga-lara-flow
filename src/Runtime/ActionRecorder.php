@@ -5,6 +5,7 @@ namespace DiscoveryUkraine\SagaLaraFlow\Runtime;
 use DateTimeInterface;
 use DiscoveryUkraine\SagaLaraFlow\Concerns\NormalizesExceptions;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\Serializer;
+use DiscoveryUkraine\SagaLaraFlow\Data\ActionSchedule;
 use DiscoveryUkraine\SagaLaraFlow\Enums\ActionStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\FlowEventType;
 use DiscoveryUkraine\SagaLaraFlow\Events\ActionAwaitingRetry;
@@ -17,6 +18,7 @@ use DiscoveryUkraine\SagaLaraFlow\Events\OptionalActionFailed;
 use DiscoveryUkraine\SagaLaraFlow\Models\ActionRun;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 
 /**
@@ -30,28 +32,16 @@ final readonly class ActionRecorder
     public function __construct(
         private EventLog $events,
         private Serializer $serializer,
+        private AnomalyLog $anomalies,
     ) {}
 
     /**
      * Create the pending ActionRun for a scheduled step. The arguments are
      * serialized once here and become the durable source the executing job
      * (or inline run) reads back.
-     *
-     * @param  array<int, mixed>  $arguments
      */
-    public function scheduleAction(
-        FlowRun $flowRun,
-        int $sequence,
-        string $actionClass,
-        array $arguments,
-        bool $hasCompensation = false,
-        bool $continueOnFailure = false,
-        ?int $parallelGroup = null,
-        ?DateTimeInterface $expiresAt = null,
-        ?string $actionName = null,
-        ?string $retrySignal = null,
-        ?int $retrySignalMaxAttempts = null,
-    ): ActionRun {
+    public function scheduleAction(FlowRun $flowRun, int $sequence, ActionSchedule $schedule): ActionRun
+    {
         /** @var class-string<ActionRun> $model */
         $model = config('saga-lara-flow.models.action_run');
 
@@ -60,25 +50,29 @@ final readonly class ActionRecorder
         $actionRun->fill([
             'flow_run_id' => $flowRun->id,
             'sequence' => $sequence,
-            'action_class' => $actionClass,
-            'action_name' => $actionName,
+            'action_class' => $schedule->actionClass,
+            'action_name' => $schedule->actionName,
             'status' => ActionStatus::Pending,
-            'has_compensation' => $hasCompensation,
-            'continue_on_failure' => $continueOnFailure,
-            'parallel_group' => $parallelGroup,
-            'expires_at' => $expiresAt ?? $this->defaultExpiry(),
-            'arguments' => $this->serializer->serialize($arguments),
+            'has_compensation' => $schedule->hasCompensation,
+            'continue_on_failure' => $schedule->continueOnFailure,
+            'parallel_group' => $schedule->parallelGroup,
+            'expires_at' => $schedule->expiresAt ?? $this->defaultExpiry(),
+            'arguments' => $this->serializer->serialize($schedule->arguments),
             'attempts' => 0,
             'queue_attempts_exhausted' => false,
-            'retry_signal' => $retrySignal,
+            'retry_signal' => $schedule->retrySignal,
             'retry_signal_attempts' => 0,
-            'retry_signal_max_attempts' => $retrySignalMaxAttempts,
+            'retry_signal_max_attempts' => $schedule->retrySignalMaxAttempts,
+            'reclaim_stale_after_seconds' => $this->resolveReclaimStaleAfterSeconds(
+                $schedule->reclaimStaleAfterSeconds,
+                $schedule->reclaimStaleEnabled,
+            ),
         ]);
 
         $actionRun->save();
 
         $this->events->record($flowRun, FlowEventType::ActionScheduled, $sequence, $actionRun, [
-            'action_class' => $actionClass,
+            'action_class' => $schedule->actionClass,
         ]);
 
         return $actionRun;
@@ -101,6 +95,33 @@ final readonly class ActionRecorder
     }
 
     /**
+     * Resolve the per-row reclaim-stale threshold at schedule time, mirroring
+     * defaultExpiry()'s "decide once, persist the concrete value" shape. An explicit
+     * builder override wins over config in both directions: enabled === false forces
+     * the mechanism off for this row regardless of config; enabled === true forces it
+     * on using config's after_seconds when no explicit $seconds was also given. With
+     * neither override, the row simply inherits config as it stands.
+     */
+    private function resolveReclaimStaleAfterSeconds(?int $seconds, ?bool $enabled): ?int
+    {
+        if ($enabled === false) {
+            return null;
+        }
+
+        if ($seconds !== null) {
+            return $seconds;
+        }
+
+        if ($enabled === true) {
+            return (int) config('saga-lara-flow.actions.reclaim.stale_running.after_seconds');
+        }
+
+        return config('saga-lara-flow.actions.reclaim.stale_running.enabled')
+            ? (int) config('saga-lara-flow.actions.reclaim.stale_running.after_seconds')
+            : null;
+    }
+
+    /**
      * Record the doctor re-dispatching a stuck Pending action. The
      * action keeps its status/sequence — only a fresh RunActionJob is sent — so an
      * action.redispatched event is appended for visibility without altering history.
@@ -117,29 +138,110 @@ final readonly class ActionRecorder
         event(new ActionRedispatched($actionRun));
     }
 
-    public function startAction(ActionRun $actionRun): void
+    /**
+     * Atomically claim the row and move it to Running, returning false when the row
+     * is no longer claimable and the caller must not execute the step.
+     *
+     * The condition lives in the UPDATE itself — the same compare-and-swap shape as
+     * SignalRecorder::claimWaiting(), the only form every supported driver enforces
+     * atomically (lockForUpdate() compiles to nothing on SQLite). This transition
+     * therefore raises no Eloquent model events; ActionStarted and the action.started
+     * flow_events entry are the supported way to observe it.
+     *
+     * Claimable statuses are Pending, Failed, and Running past its reclaim deadline.
+     * Failed is not terminal here: it is what the row shows between two of the
+     * action's own native $tries, which Laravel redelivers as the very same job.
+     *
+     * `attempts` is incremented by the database, so two racing claims can never
+     * persist the same count, and the value a claim produces identifies it.
+     *
+     * $expectedRetryGeneration constrains retry_signal_attempts, folding a caller's
+     * stale-cycle check into this same atomic write so a cycle change landing after
+     * the row was read still loses the claim. Null imposes no constraint.
+     *
+     * The claim and its two records share one transaction: a listener throwing on
+     * ActionStarted would otherwise leave the row Running with nothing executing it.
+     *
+     * @throws Throwable
+     */
+    public function startAction(ActionRun $actionRun, ?int $expectedRetryGeneration = null): bool
     {
-        $actionRun->status = ActionStatus::Running;
-        $actionRun->attempts = $actionRun->attempts + 1;
-        $actionRun->started_at = Carbon::now();
-        $actionRun->save();
+        return $actionRun->getConnection()->transaction(
+            function () use ($actionRun, $expectedRetryGeneration): bool {
+                $now = Carbon::now();
 
-        $this->events->record(
-            $actionRun->flowRun,
-            FlowEventType::ActionStarted,
-            $actionRun->sequence,
-            $actionRun
+                // Fixed at schedule time and never rewritten, so reading it off the
+                // model is safe — unlike the deadline derived from it, which moves with
+                // every claim and is therefore compared in the database.
+                $staleAfter = $actionRun->reclaim_stale_after_seconds;
+
+                $claimed = $actionRun->newQuery()
+                    ->whereKey($actionRun->getKey())
+                    ->when(
+                        $expectedRetryGeneration !== null,
+                        fn ($query) => $query->where('retry_signal_attempts', $expectedRetryGeneration),
+                    )
+                    ->where(function ($query) use ($now): void {
+                        $query->whereIn('status', [ActionStatus::Pending, ActionStatus::Failed])
+                            ->orWhere(function ($query) use ($now): void {
+                                $query->where('status', ActionStatus::Running)
+                                    ->whereNotNull('reclaim_stale_at')
+                                    ->where('reclaim_stale_at', '<=', $now);
+                            });
+                    })
+                    ->update([
+                        'status' => ActionStatus::Running,
+                        'attempts' => DB::raw('attempts + 1'),
+                        'started_at' => $now,
+                        'reclaim_stale_at' => $staleAfter === null
+                            ? null
+                            : $now->copy()->addSeconds($staleAfter),
+                    ]) === 1;
+
+                if (! $claimed) {
+                    $this->anomalies->log(AnomalyLog::REASON_CLAIM_LOST, [
+                        'entity' => 'action',
+                        'flow_run_id' => $actionRun->flow_run_id,
+                        'action_run_id' => $actionRun->id,
+                        'sequence' => $actionRun->sequence,
+                        'action_class' => $actionRun->action_class,
+                        'expected_retry_generation' => $expectedRetryGeneration,
+                    ]);
+
+                    return false;
+                }
+
+                $actionRun->refresh();
+
+                $this->events->record(
+                    $actionRun->flowRun,
+                    FlowEventType::ActionStarted,
+                    $actionRun->sequence,
+                    $actionRun
+                );
+
+                event(new ActionStarted($actionRun));
+
+                return true;
+            }
         );
-
-        event(new ActionStarted($actionRun));
     }
 
-    public function completeAction(ActionRun $actionRun, mixed $result): void
+    /**
+     * Record the step's result, but only if this executor still owns the row — see
+     * writeOutcome(). Returns whether the outcome was recorded.
+     */
+    public function completeAction(ActionRun $actionRun, mixed $result): bool
     {
+        $claimedAttempts = $actionRun->attempts;
+
         $actionRun->status = ActionStatus::Completed;
         $actionRun->result = $this->serializer->serialize($result);
         $actionRun->finished_at = Carbon::now();
-        $actionRun->save();
+
+        if (! $this->writeOutcome($actionRun, $claimedAttempts, FlowEventType::ActionCompleted)) {
+            return false;
+        }
 
         $this->events->record(
             $actionRun->flowRun,
@@ -149,16 +251,25 @@ final readonly class ActionRecorder
         );
 
         event(new ActionCompleted($actionRun));
+
+        return true;
     }
 
-    public function failAction(ActionRun $actionRun, Throwable $exception): void
+    /**
+     * Record the step's failure under the same ownership check as completeAction().
+     */
+    public function failAction(ActionRun $actionRun, Throwable $exception): bool
     {
+        $claimedAttempts = $actionRun->attempts;
         $exceptionArray = $this->exceptionToArray($exception);
 
         $actionRun->status = ActionStatus::Failed;
         $actionRun->exception = $exceptionArray;
         $actionRun->finished_at = Carbon::now();
-        $actionRun->save();
+
+        if (! $this->writeOutcome($actionRun, $claimedAttempts, FlowEventType::ActionFailed)) {
+            return false;
+        }
 
         $this->events->record(
             $actionRun->flowRun,
@@ -171,6 +282,48 @@ final readonly class ActionRecorder
         );
 
         event(new ActionFailed($actionRun, $exception));
+
+        return true;
+    }
+
+    /**
+     * Persist the pending attribute changes as a fenced conditional UPDATE. The values
+     * come from getDirty(), so the model's own casts encode them exactly as save()
+     * would; only the WHERE differs.
+     *
+     * Its two conditions guard two different rivals. `attempts` fences against another
+     * executor: reclaim can hand the row to a second worker while the first is merely
+     * slow, and the superseded one must not overwrite the live one's outcome. The
+     * status check fences against a transition that never claimed the row — the
+     * monitor expires an overdue step without touching `attempts`, so without it a
+     * late worker would overwrite that Expired and leave the run carrying both
+     * action.expired and action.completed.
+     */
+    private function writeOutcome(ActionRun $actionRun, int $claimedAttempts, FlowEventType $outcome): bool
+    {
+        $written = $actionRun->newQuery()
+            ->whereKey($actionRun->getKey())
+            ->where('attempts', $claimedAttempts)
+            ->where('status', ActionStatus::Running)
+            ->update($actionRun->getDirty()) === 1;
+
+        if (! $written) {
+            $this->anomalies->log(AnomalyLog::REASON_OUTCOME_REJECTED, [
+                'entity' => 'action',
+                'flow_run_id' => $actionRun->flow_run_id,
+                'action_run_id' => $actionRun->id,
+                'sequence' => $actionRun->sequence,
+                'action_class' => $actionRun->action_class,
+                'outcome' => $outcome->value,
+                'claimed_attempts' => $claimedAttempts,
+            ]);
+
+            return false;
+        }
+
+        $actionRun->syncOriginal();
+
+        return true;
     }
 
     /**
@@ -275,6 +428,10 @@ final readonly class ActionRecorder
         $actionRun->started_at = null;
         $actionRun->finished_at = null;
 
+        // The deadline is derived from a start that no longer happened; the next
+        // claim recomputes it from its own started_at.
+        $actionRun->reclaim_stale_at = null;
+
         // A fresh job means a fresh native-attempt allowance: the queue has not given
         // up on this cycle yet, whatever it did to the previous one.
         $actionRun->queue_attempts_exhausted = false;
@@ -314,14 +471,40 @@ final readonly class ActionRecorder
      * replay the seam treats Expired as a failure (or, for an optional step, as a
      * give-up returning its fallback).
      *
+     * Conditional, from the other side of the race writeOutcome() guards: the sweep
+     * selects a row and writes to it a moment later, and an executing worker can settle
+     * it in between. An unconditional save() would demote that Completed step to
+     * Expired, failing a run over work that succeeded. Returns whether this call is the
+     * one that expired the row, so the monitor counts and wakes only for a transition
+     * it won.
+     *
      * @param  array<string, mixed>  $exception
      */
-    public function expireAction(ActionRun $actionRun, array $exception): void
+    public function expireAction(ActionRun $actionRun, array $exception): bool
     {
         $actionRun->status = ActionStatus::Expired;
         $actionRun->exception = $exception;
         $actionRun->finished_at = Carbon::now();
-        $actionRun->save();
+
+        $expired = $actionRun->newQuery()
+            ->whereKey($actionRun->getKey())
+            ->whereIn('status', [ActionStatus::Pending, ActionStatus::Running])
+            ->update($actionRun->getDirty()) === 1;
+
+        if (! $expired) {
+            $this->anomalies->log(AnomalyLog::REASON_OUTCOME_REJECTED, [
+                'entity' => 'action',
+                'flow_run_id' => $actionRun->flow_run_id,
+                'action_run_id' => $actionRun->id,
+                'sequence' => $actionRun->sequence,
+                'action_class' => $actionRun->action_class,
+                'outcome' => FlowEventType::ActionExpired->value,
+            ]);
+
+            return false;
+        }
+
+        $actionRun->syncOriginal();
 
         $this->events->record(
             $actionRun->flowRun,
@@ -330,5 +513,7 @@ final readonly class ActionRecorder
             $actionRun,
             ['exception' => $exception],
         );
+
+        return true;
     }
 }

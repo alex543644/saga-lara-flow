@@ -2,9 +2,11 @@
 
 namespace DiscoveryUkraine\SagaLaraFlow\Runtime;
 
-use DateTimeInterface;
 use DiscoveryUkraine\SagaLaraFlow\Concerns\ResolvesMethodDependencies;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\Serializer;
+use DiscoveryUkraine\SagaLaraFlow\Data\ActionSchedule;
+use DiscoveryUkraine\SagaLaraFlow\Enums\StepExecution;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\ActionClaimFailedException;
 use DiscoveryUkraine\SagaLaraFlow\Jobs\RunActionJob;
 use DiscoveryUkraine\SagaLaraFlow\Models\ActionRun;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
@@ -29,37 +31,13 @@ class ActionDispatcher
 
     /**
      * Queued mode: persist the pending step and dispatch its job.
-     *
-     * @param  array<int, mixed>  $arguments
      */
-    public function dispatch(
-        FlowRun $flowRun,
-        int $sequence,
-        string $actionClass,
-        array $arguments,
-        bool $hasCompensation = false,
-        bool $continueOnFailure = false,
-        ?DateTimeInterface $expiresAt = null,
-        ?string $actionName = null,
-        ?string $retrySignal = null,
-        ?int $retrySignalMaxAttempts = null,
-    ): ActionRun {
-        $actionRun = $this->recorder->scheduleAction(
-            $flowRun,
-            $sequence,
-            $actionClass,
-            $arguments,
-            $hasCompensation,
-            $continueOnFailure,
-            null,
-            $expiresAt,
-            $actionName,
-            $retrySignal,
-            $retrySignalMaxAttempts,
-        );
+    public function dispatch(FlowRun $flowRun, int $sequence, ActionSchedule $schedule): ActionRun
+    {
+        $actionRun = $this->recorder->scheduleAction($flowRun, $sequence, $schedule);
 
         $this->route(
-            RunActionJob::dispatch($actionRun->id, $actionClass, $actionRun->retry_signal_attempts),
+            RunActionJob::dispatch($actionRun->id, $schedule->actionClass, $actionRun->retry_signal_attempts),
             $flowRun,
         );
 
@@ -105,58 +83,49 @@ class ActionDispatcher
     }
 
     /**
-     * Sync mode: persist the pending step and execute it inline.
-     *
-     * @param  array<int, mixed>  $arguments
+     * Sync mode: persist the pending step and execute it inline. Returns how far the
+     * step got, so the caller can tell a broken invariant from a lost race.
      *
      * @throws Throwable
      */
-    public function runInline(
-        FlowRun $run,
-        int $sequence,
-        string $actionClass,
-        array $arguments,
-        bool $hasCompensation = false,
-        bool $continueOnFailure = false,
-        ?int $parallelGroup = null,
-        ?DateTimeInterface $expiresAt = null,
-        ?string $actionName = null,
-        ?string $retrySignal = null,
-        ?int $retrySignalMaxAttempts = null,
-    ): ActionRun {
-        $actionRun = $this->recorder->scheduleAction(
-            $run,
-            $sequence,
-            $actionClass,
-            $arguments,
-            $hasCompensation,
-            $continueOnFailure,
-            $parallelGroup,
-            $expiresAt,
-            $actionName,
-            $retrySignal,
-            $retrySignalMaxAttempts,
-        );
+    public function runInline(FlowRun $run, int $sequence, ActionSchedule $schedule): StepExecution
+    {
+        $actionRun = $this->recorder->scheduleAction($run, $sequence, $schedule);
 
-        $this->execute($actionRun);
+        $execution = $this->execute($actionRun);
 
-        return $actionRun;
+        // A row created in this very call is not reachable by anyone else yet, so
+        // losing the claim is not a race but a broken invariant. Being superseded
+        // afterwards is a race, and a real one: the monitor and the doctor run in
+        // their own processes against the same rows a sync run creates.
+        if ($execution === StepExecution::ClaimLost) {
+            throw ActionClaimFailedException::forAction($schedule->actionClass, $sequence);
+        }
+
+        return $execution;
     }
 
     /**
-     * Run a persisted action step to completion. Shared by sync inline execution
-     * and the queued RunActionJob. A business failure marks the step Failed and
-     * is rethrown so the workflow can react on replay.
+     * Claim and run a persisted action step to completion. Shared by sync inline
+     * execution and the queued RunActionJob.
+     *
+     * The two non-Executed results are both "someone else is handling this row", never
+     * a failure of the step, but they are not interchangeable: ClaimLost means nothing
+     * ran, while Superseded means the work happened and only its outcome was dropped.
+     * A business failure marks the step Failed and is rethrown so the workflow can
+     * react on replay.
      *
      * @throws Throwable
      */
-    public function execute(ActionRun $actionRun): void
+    public function execute(ActionRun $actionRun, ?int $expectedRetryGeneration = null): StepExecution
     {
-        app(TenancyManager::class)->for(
+        return app(TenancyManager::class)->for(
             $actionRun->flowRun,
             $actionRun->action_class,
-            function () use ($actionRun): void {
-                $this->recorder->startAction($actionRun);
+            function () use ($actionRun, $expectedRetryGeneration): StepExecution {
+                if (! $this->recorder->startAction($actionRun, $expectedRetryGeneration)) {
+                    return StepExecution::ClaimLost;
+                }
 
                 $instance = app()->make($actionRun->action_class);
 
@@ -166,12 +135,20 @@ class ActionDispatcher
                 try {
                     $result = $this->callWithDependencies($instance, 'handle', $arguments);
                 } catch (Throwable $e) {
-                    $this->recorder->failAction($actionRun, $e);
+                    // A rejected outcome means this executor was superseded while it
+                    // ran, so its failure settles nothing. Rethrowing would fail a job
+                    // whose work is already discarded, and RunActionJob::failed() would
+                    // then write queue bookkeeping into a row it no longer owns.
+                    if (! $this->recorder->failAction($actionRun, $e)) {
+                        return StepExecution::Superseded;
+                    }
 
                     throw $e;
                 }
 
-                $this->recorder->completeAction($actionRun, $result);
+                return $this->recorder->completeAction($actionRun, $result)
+                    ? StepExecution::Executed
+                    : StepExecution::Superseded;
             },
         );
     }

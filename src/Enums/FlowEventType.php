@@ -32,6 +32,7 @@ enum FlowEventType: string
     case SideEffectReused = 'side_effect.reused';
 
     case CompensationStarted = 'compensation.started';
+    case CompensationStepStarted = 'compensation.step_started';
     case CompensationCompleted = 'compensation.completed';
     case CompensationFailed = 'compensation.failed';
 

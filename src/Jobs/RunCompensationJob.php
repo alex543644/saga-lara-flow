@@ -4,7 +4,7 @@ namespace DiscoveryUkraine\SagaLaraFlow\Jobs;
 
 use DiscoveryUkraine\SagaLaraFlow\Contracts\FlowRepository;
 use DiscoveryUkraine\SagaLaraFlow\Data\CompensationDefinition;
-use DiscoveryUkraine\SagaLaraFlow\Enums\CompensationStatus;
+use DiscoveryUkraine\SagaLaraFlow\Middleware\LockMiddlewareFactory;
 use DiscoveryUkraine\SagaLaraFlow\Models\CompensationRun;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\CompensationExecutor;
 use DiscoveryUkraine\SagaLaraFlow\Support\TenancyManager;
@@ -48,15 +48,24 @@ class RunCompensationJob implements ShouldQueue
             return;
         }
 
-        if (in_array($compensation->status, [CompensationStatus::Completed, CompensationStatus::Failed], true)) {
-            return;
-        }
+        // No status pre-check: the claim inside execute() is the single source of
+        // truth — a row already settled, or still Running within its reclaim window,
+        // fails the claim and nothing runs. A lost claim is quiet here because the
+        // batch's own ->finally(new AdvanceCompensation(...)) settles the level.
 
         $tenancy->for(
             $flowRun,
             $flowRun->workflow_class,
             fn () => $executor->execute($compensation, $this->definition),
         );
+    }
+
+    /**
+     * @return array<int, object>
+     */
+    public function middleware(): array
+    {
+        return app(LockMiddlewareFactory::class)->compensationMiddleware($this->compensationRunId);
     }
 
     private function resolveCompensation(): ?CompensationRun

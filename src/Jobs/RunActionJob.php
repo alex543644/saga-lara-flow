@@ -57,27 +57,12 @@ class RunActionJob implements ShouldQueue
             return;
         }
 
-        // Left over from an earlier retry cycle: the row has moved on, so running it
-        // now would execute the step a second time without a signal. The workflow is
-        // still resumed — this job may be the only wake left if the pass that rewound
-        // the row died before sending the live one.
-        if ($action->retry_signal_attempts !== ($this->retryGeneration ?? 0)) {
-            $this->resumeWorkflow($action);
-
-            return;
-        }
-
-        // Skip a step already settled out of band: Completed on an earlier attempt,
-        // Expired by the monitor (a late job must not resurrect an expired step), or
-        // parked on a retry signal (only the seam may restart it, and only once the
-        // signal lands).
-        if (! in_array(
-            $action->status,
-            [ActionStatus::Completed, ActionStatus::Expired, ActionStatus::AwaitingRetry],
-            true,
-        )) {
-            $dispatcher->execute($action);
-        }
+        // The claim inside execute() is the single source of truth for whether this job
+        // may run the step: it folds the row's status and this job's own retry cycle
+        // into one atomic write, so no pre-check is needed here. A lost claim is quiet,
+        // and the workflow is resumed either way — this job may be the only wake left
+        // if whatever rewound the row died before sending the live one.
+        $dispatcher->execute($action, $this->retryGeneration ?? 0);
 
         $this->resumeWorkflow($action);
     }

@@ -28,6 +28,8 @@ use Illuminate\Support\Carbon;
  * @property int $attempts
  * @property bool $queue_attempts_exhausted
  * @property ?Carbon $started_at
+ * @property ?int $reclaim_stale_after_seconds
+ * @property ?Carbon $reclaim_stale_at
  * @property ?Carbon $finished_at
  * @property ?Carbon $expires_at
  * @property int $repair_attempts
@@ -59,6 +61,8 @@ class ActionRun extends Model
             'attempts' => 'integer',
             'queue_attempts_exhausted' => 'boolean',
             'started_at' => 'datetime',
+            'reclaim_stale_after_seconds' => 'integer',
+            'reclaim_stale_at' => 'datetime',
             'finished_at' => 'datetime',
             'expires_at' => 'datetime',
             'repair_attempts' => 'integer',

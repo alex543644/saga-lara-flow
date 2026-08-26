@@ -22,6 +22,8 @@ final readonly class CompensationEntry
         public ?CompensationFailurePolicy $actionCompensationFailurePolicy = null,
         public ?CompensationFailurePolicy $groupCompensationFailurePolicy = null,
         public ?int $parallelGroupId = null,
+        public ?int $reclaimStaleAfterSeconds = null,
+        public ?bool $reclaimStaleEnabled = null,
     ) {}
 
     public function effectivePolicy(): CompensationFailurePolicy

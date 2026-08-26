@@ -5,6 +5,7 @@ namespace DiscoveryUkraine\SagaLaraFlow\Runtime;
 use DiscoveryUkraine\SagaLaraFlow\Builders\ParallelStepBuilder;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\ActionRunRepository;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\Serializer;
+use DiscoveryUkraine\SagaLaraFlow\Data\ActionSchedule;
 use DiscoveryUkraine\SagaLaraFlow\Enums\ActionStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\ParallelFailurePolicy;
 use DiscoveryUkraine\SagaLaraFlow\Enums\RunMode;
@@ -98,12 +99,7 @@ final readonly class ParallelRunner
                 $this->dispatcher->runInline(
                     $flowRun,
                     $slot['sequence'],
-                    $step->actionClass(),
-                    $step->arguments(),
-                    $step->compensation() !== null,
-                    $step->isOptional(),
-                    $groupId,
-                    $step->expiry(),
+                    $this->scheduleFor($step, $groupId),
                 );
             } catch (Throwable $exception) {
                 // Optional inline failure (no retries inline): give up now and keep going.
@@ -145,12 +141,7 @@ final readonly class ParallelRunner
             $actionRun = $this->recorder->scheduleAction(
                 $flowRun,
                 $slot['sequence'],
-                $step->actionClass(),
-                $step->arguments(),
-                $step->compensation() !== null,
-                $step->isOptional(),
-                $groupId,
-                $step->expiry(),
+                $this->scheduleFor($step, $groupId),
             );
 
             $jobs[] = new RunParallelActionJob($actionRun->id, $step->actionClass(), $policy);
@@ -291,6 +282,22 @@ final readonly class ParallelRunner
     {
         return $step->compensateOnSelfFailure()
             ?? (bool) config('saga-lara-flow.sagas.compensate_failed_step');
+    }
+
+    /**
+     * A parallel step carries no retry-on-signal policy and no reclaim override; both
+     * paths of the block schedule it the same way, differing only in transport.
+     */
+    private function scheduleFor(ParallelStepBuilder $step, int $groupId): ActionSchedule
+    {
+        return new ActionSchedule(
+            actionClass: $step->actionClass(),
+            arguments: $step->arguments(),
+            hasCompensation: $step->compensation() !== null,
+            continueOnFailure: $step->isOptional(),
+            parallelGroup: $groupId,
+            expiresAt: $step->expiry(),
+        );
     }
 
     private function markOptionalFailed(string $flowRunId, int $sequence): void

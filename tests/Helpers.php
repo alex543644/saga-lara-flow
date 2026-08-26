@@ -99,3 +99,20 @@ if (! function_exists('useDatabaseQueue')) {
         return ['status' => $run->status, 'actions' => $actions];
     }
 }
+
+if (! function_exists('logToFile')) {
+    /**
+     * Point the package's anomaly log at a real single-file channel. The project uses
+     * no mocks, so the assertions read the file an operator would actually grep.
+     */
+    function logToFile(string $path): void
+    {
+        config()->set('logging.channels.saga_test', [
+            'driver' => 'single',
+            'path' => $path,
+            'level' => 'debug',
+        ]);
+
+        config()->set('saga-lara-flow.logging.channel', 'saga_test');
+    }
+}

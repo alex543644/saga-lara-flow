@@ -166,10 +166,17 @@ final readonly class FlowMonitor
             return false;
         }
 
-        $this->actionRecorder->expireAction(
+        // A worker can settle the step between this sweep's select and its write, and
+        // the expiry refuses to overwrite that. Nothing was expired then, so there is
+        // nothing to count and no marker for a woken replay to resolve.
+        $expired = $this->actionRecorder->expireAction(
             $action,
             $this->exceptionToArray(FlowExpiredException::forAction($action->action_class, $action->sequence)),
         );
+
+        if (! $expired) {
+            return false;
+        }
 
         $this->wake($run);
 

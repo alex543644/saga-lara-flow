@@ -4,6 +4,7 @@ namespace DiscoveryUkraine\SagaLaraFlow\Runtime;
 
 use DiscoveryUkraine\SagaLaraFlow\Concerns\ResolvesMethodDependencies;
 use DiscoveryUkraine\SagaLaraFlow\Data\CompensationDefinition;
+use DiscoveryUkraine\SagaLaraFlow\Enums\StepExecution;
 use DiscoveryUkraine\SagaLaraFlow\Models\CompensationRun;
 use Illuminate\Contracts\Container\BindingResolutionException;
 use ReflectionException;
@@ -25,19 +26,31 @@ class CompensationExecutor
         private readonly CompensationRecorder $recorder,
     ) {}
 
-    public function execute(CompensationRun $compensation, CompensationDefinition $definition): void
+    /**
+     * Mirrors ActionDispatcher::execute(): anything but Executed means someone else is
+     * handling this row, never that the compensation failed. ClaimLost is the row
+     * being unavailable before anything ran; Superseded is the undo having run with
+     * its outcome dropped.
+     *
+     * @throws Throwable
+     */
+    public function execute(CompensationRun $compensation, CompensationDefinition $definition): StepExecution
     {
-        $this->recorder->startCompensation($compensation);
+        if (! $this->recorder->startCompensation($compensation)) {
+            return StepExecution::ClaimLost;
+        }
 
         try {
             $result = $this->run($definition);
         } catch (Throwable $exception) {
-            $this->recorder->failCompensation($compensation, $exception);
-
-            return;
+            return $this->recorder->failCompensation($compensation, $exception)
+                ? StepExecution::Executed
+                : StepExecution::Superseded;
         }
 
-        $this->recorder->completeCompensation($compensation, $result);
+        return $this->recorder->completeCompensation($compensation, $result)
+            ? StepExecution::Executed
+            : StepExecution::Superseded;
     }
 
     /**

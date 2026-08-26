@@ -48,6 +48,33 @@ class EloquentActionRunRepository implements ActionRunRepository
     }
 
     /**
+     * The claim resolves each row's reclaim window into an absolute reclaim_stale_at,
+     * so staleness is one indexed comparison — the same shape as dueForExpiration().
+     * Ordering by the filtered column is what makes the limit safe: a pass can only be
+     * filled with rows that are actually due, so a backlog of not-yet-stale rows can
+     * never crowd out stale ones.
+     */
+    public function dueForStaleRunningRepair(int $limit, int $maxAttempts): iterable
+    {
+        $now = Carbon::now();
+
+        return $this->model()::query()
+            ->where('status', ActionStatus::Running)
+            ->whereNull('parallel_group')
+            ->whereNotNull('reclaim_stale_at')
+            ->where('reclaim_stale_at', '<=', $now)
+            ->where('repair_attempts', '<', $maxAttempts)
+            ->where(function ($query) use ($now): void {
+                $query
+                    ->whereNull('repair_available_at')
+                    ->orWhere('repair_available_at', '<=', $now);
+            })
+            ->orderBy('reclaim_stale_at')
+            ->limit($limit)
+            ->get();
+    }
+
+    /**
      * @return class-string<ActionRun>
      */
     private function model(): string
