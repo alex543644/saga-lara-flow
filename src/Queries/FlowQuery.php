@@ -3,7 +3,9 @@
 namespace DiscoveryUkraine\SagaLaraFlow\Queries;
 
 use DateTimeInterface;
+use DiscoveryUkraine\SagaLaraFlow\Enums\ActionStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
+use DiscoveryUkraine\SagaLaraFlow\Enums\SignalStatus;
 use DiscoveryUkraine\SagaLaraFlow\FlowHandle;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
@@ -54,6 +56,50 @@ readonly class FlowQuery
     public function whereWorkflow(string $workflowClass): static
     {
         $this->builder->where('workflow_class', $workflowClass);
+
+        return $this;
+    }
+
+    /**
+     * Runs whose wait for a signal is still open, whichever seam opened it: an
+     * explicit awaitSignal(), or a step parked by retryOnSignal(). A null $name
+     * matches any name.
+     *
+     * Only whereAwaitingRetrySignal() tells the two seams apart. Matching is on the
+     * signal row rather than the run's status, so compose with signalable() to skip
+     * runs that have already finished.
+     */
+    public function whereAwaitingSignal(?string $name = null): static
+    {
+        $this->builder->whereHas('signals', function (Builder $query) use ($name): void {
+            $query->where('status', SignalStatus::Waiting);
+
+            if ($name !== null) {
+                $query->where('name', $name);
+            }
+        });
+
+        return $this;
+    }
+
+    /**
+     * Runs holding a step parked by retryOnSignal(), i.e. an action_runs row in
+     * awaiting_retry. A null $signal matches any retry signal.
+     *
+     * A park opens a signal wait too, but the two settle at different moments:
+     * delivery marks the wait Received and a timeout marks it TimedOut, while the
+     * step stays parked until replay resumes the run. So this also finds a run whose
+     * signal arrived but whose resume never did.
+     */
+    public function whereAwaitingRetrySignal(?string $signal = null): static
+    {
+        $this->builder->whereHas('actions', function (Builder $query) use ($signal): void {
+            $query->where('status', ActionStatus::AwaitingRetry);
+
+            if ($signal !== null) {
+                $query->where('retry_signal', $signal);
+            }
+        });
 
         return $this;
     }

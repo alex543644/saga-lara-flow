@@ -63,6 +63,34 @@ readonly class FlowHandle
     }
 
     /**
+     * Attach a queryable tag to this run, overwriting the value a previous write
+     * left under that key. A workflow that tags the same key in handle() rewrites
+     * it on every replay, so prefer keys the workflow does not write itself.
+     */
+    public function tag(string $key, string|int|null $value = null): static
+    {
+        return $this->withTags([$key => $value]);
+    }
+
+    /**
+     * Attach several queryable tags at once, keyed by tag name.
+     *
+     * @param  array<string, string|int|null>  $tags
+     */
+    public function withTags(array $tags): static
+    {
+        foreach ($tags as $key => $value) {
+            $this->flowRun->tags()->updateOrCreate(['key' => $key], ['value' => $value]);
+        }
+
+        // tags() reads a lazily loaded relation, which would otherwise keep serving
+        // the collection it held before these writes.
+        $this->flowRun->unsetRelation('tags');
+
+        return $this;
+    }
+
+    /**
      * Deliver an external signal to this run and wake it. Throws on a terminal run.
      *
      * @param  array<int|string, mixed>  $payload

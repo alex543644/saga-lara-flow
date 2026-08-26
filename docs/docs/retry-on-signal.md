@@ -141,18 +141,22 @@ SagaFlow::loadFlow($runId)->signal('balance-refilled');
 php artisan saga-flow:signal 01JABCDEF... balance-refilled
 ```
 
-Usually you do not have the run id at hand. Query for it, and filter with `signalable()` (a parked
-run is `Waiting`, never `Running`):
+Usually you do not have the run id at hand. Query for it with `whereAwaitingRetrySignal()`, and
+filter with `signalable()` (a parked run is `Waiting`, never `Running`):
 
 ```php
 SagaFlow::query()
     ->whereWorkflow(CheckoutWorkflow::class)
     ->whereTag('customer', $customerId)
+    ->whereAwaitingRetrySignal('balance-refilled')
     ->signalable()
     ->handles()
     ->first()
     ?->signal('balance-refilled');
 ```
+
+`whereAwaitingSignal()` is the wider filter: it also matches a run parked by `awaitSignal()` on that
+name. See [Tags & querying](./tags-and-querying.md#waits-and-parked-steps).
 
 The signal's **payload is not passed to the action**. Action arguments must stay identical across
 replays, so the retried step runs with the arguments it was given originally; the payload is stored

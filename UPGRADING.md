@@ -189,6 +189,54 @@ freshly created row that cannot be claimed is a broken invariant and still raise
 the doctor act on the rows a sync run creates from their own processes — and replay resolves it from
 whatever the row ended up holding.
 
+### 11. Two more migrations: wait indexes, then one row per tag key
+
+They ship as separate files because only the second one deletes anything. MySQL runs neither inside
+a transaction, so both are written to be repeatable: whatever point a run dies at, running it again
+carries on from there.
+
+**`index_signal_waits`** supports the two new `FlowQuery` filters. `flow_signals` gains
+`(status, name, flow_run_id)` and `action_runs` gains `(status, retry_signal, flow_run_id)`; the
+shipped indexes on both tables lead with `flow_run_id`, which cannot serve a lookup by signal name
+across runs.
+
+**`unique_flow_tag_keys`** narrows `flow_tags` uniqueness from `(flow_run_id, key, value)` to
+`(flow_run_id, key)`, the pair every tag writer matches on. The wider unique let two concurrent
+first writes for one key insert two rows with different values.
+
+> #### ⚠️ Rows are deleted if you have such duplicates
+>
+> For each `(flow_run_id, key)` the row with the highest `updated_at` is kept, the highest `id`
+> breaking a tie, and the rest are removed. `flow_tags` timestamps are second-precision, so two
+> writes inside one second fall back to insertion order. The rollback restores the old constraint
+> but cannot bring deleted rows back.
+>
+> **Pause writes to `flow_tags` while this runs.** A write landing on an already-duplicated key
+> between the winner being chosen and the losers being deleted is lost without a trace, and running
+> the migration again will not bring it back. Keys that are not already duplicated are never touched.
+
+Count the duplicates first — the table carries your configured `database.table_prefix`, `saga_` by
+default:
+
+```sql
+-- MySQL
+select flow_run_id, `key`, count(*) from saga_flow_tags group by flow_run_id, `key` having count(*) > 1;
+
+-- PostgreSQL, SQLite
+select flow_run_id, "key", count(*) from saga_flow_tags group by flow_run_id, "key" having count(*) > 1;
+```
+
+The narrower unique goes on before the wider one comes off, so the table is never left without one.
+A tag written for a brand-new key while the migration sits between the cleanup and the constraint
+can still make it fail; run it again.
+
+If the count comes back empty there is nothing to lose and nothing to pause for — the migration adds
+the constraint and stops.
+
+Tag writing is otherwise unchanged: one value per key per run, last write wins. The int-to-string
+normalisation now also sits on `Models\FlowTag` as a cast, so a `models.flow_tag` replacement should
+extend that model rather than reimplement it.
+
 ### Recommended while you are here
 
 - **Decide how a killed worker should be recovered** — see item 1. Leaving both reclaim and the
