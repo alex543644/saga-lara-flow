@@ -23,7 +23,8 @@ public function handle(): array
 ```
 
 `child(string $workflowClass, array $arguments = [])` takes the child's `handle()` arguments as an
-array. `run()` awaits the child and returns its result.
+array. `run()` awaits the child and returns whatever the child's `handle()` returned, scalars
+included.
 
 ## Close policies
 

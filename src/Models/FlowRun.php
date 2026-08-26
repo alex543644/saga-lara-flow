@@ -18,7 +18,7 @@ use Illuminate\Support\Carbon;
  * @property ?string $workflow_version
  * @property FlowStatus $status
  * @property ?array<int|string, mixed> $arguments
- * @property ?array<int|string, mixed> $result
+ * @property mixed $result
  * @property ?array<int|string, mixed> $exception
  * @property ?array<int|string, mixed> $tenancy_context
  * @property ?string $connection

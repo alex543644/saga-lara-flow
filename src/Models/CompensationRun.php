@@ -20,7 +20,7 @@ use Illuminate\Support\Carbon;
  * @property bool $continue_on_failure
  * @property int $attempts
  * @property ?array<int|string, mixed> $arguments
- * @property ?array<int|string, mixed> $result
+ * @property mixed $result
  * @property ?array<int|string, mixed> $exception
  * @property ?Carbon $started_at
  * @property ?int $reclaim_stale_after_seconds
