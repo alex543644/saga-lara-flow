@@ -61,11 +61,27 @@ $this->saga()
 
 `CompensationFailurePolicy`:
 
-- `Stop` (default) — halt the rollback on the first failed compensation.
-- `Continue` — keep rolling back even if one undo fails.
+- `Stop` (default) — halt the rollback on the first compensation that does not complete.
+- `Continue` — keep rolling back even if one undo does not complete.
 
 Precedence is **action > group > config** (`sagas.default_compensation_failure_policy`). If a
 compensation itself fails under `Stop`, a `CompensationFailedException` surfaces.
+
+"Does not complete" covers more than a throw. A compensation whose worker was killed, or whose job
+never arrived, is left `Pending` or `Running` when its level finishes, and `Stop` halts the rollback
+for that too: unwinding further on top of a step that may still stand is what the policy exists to
+prevent. The run records it under `flow_run.exception['compensation']` as a
+`CompensationUnfinishedException` rather than a `CompensationFailedException` — there is no cause to
+report, since it never got far enough to have one. A rollback therefore never finalizes looking
+clean while one step was silently left undone.
+
+The exception states what was observed: the compensation *had not finished when its rollback level
+ended*. Usually it never does. It can also mean an at-least-once queue closed the batch a moment
+before the live worker recorded its success — see
+[Reclaim & recovery](./reclaim-and-recovery.md) for that race and how to spot it in your logs.
+
+To have such a compensation retried rather than only reported, enable `sagas.reclaim.stale_running`
+— see [Reclaim & recovery](./reclaim-and-recovery.md).
 
 ## Manual compensation
 

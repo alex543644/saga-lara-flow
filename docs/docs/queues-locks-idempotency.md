@@ -46,22 +46,52 @@ Concurrent drives of the *same* run are serialized by Laravel's `WithoutOverlapp
     'enabled' => true,
     'workflow_ttl_seconds' => 900,
     'action_ttl_seconds' => 900,
+    'compensation_ttl_seconds' => 900,
     'block_seconds' => 5,
     'prefix' => 'saga-lara-flow',
 ],
 ```
 
-This guarantees that two workers can't advance one run at the same time. Each parameter:
+This guarantees that two workers can't advance one run at the same time. It covers workflow drives,
+action steps (sequential and parallel) and compensations, each keyed on its own row. Each parameter:
 
 - **`enabled`** — turn the `WithoutOverlapping` middleware on or off.
 - **`store`** — cache store backing the locks (`null` = the app default). Point it at a dedicated
   store to isolate the locks from your app cache.
-- **`workflow_ttl_seconds`** / **`action_ttl_seconds`** — **in seconds**. The maximum time a lock is
-  held before it auto-expires, so a worker that dies mid-drive can't wedge a run forever. Set them
-  comfortably above your longest workflow/action runtime.
+- **`workflow_ttl_seconds`** / **`action_ttl_seconds`** / **`compensation_ttl_seconds`** — **in
+  seconds**. The maximum time a lock is held before it auto-expires, so a worker that dies mid-drive
+  can't wedge a run forever. Set them comfortably above your longest workflow/action/compensation
+  runtime.
 - **`block_seconds`** — **in seconds**. How long a competing job waits to acquire the lock before
   giving up and letting the queue retry it later.
 - **`prefix`** — string prefix for every lock key (namespacing when the store is shared).
+
+## When a step is quietly skipped
+
+Three things can happen to a worker without failing its job: it loses the claim to whoever already
+owns the row, it finishes but has been superseded meanwhile so its outcome is rejected, or it
+finishes a parallel step whose batch a duplicate had already closed. All three are ordinary
+consequences of at-least-once delivery, and none of them leaves a trace in the run's history — so the
+package keeps a second journal for them:
+
+```php
+'logging' => [
+    'anomaly_level' => env('SAGA_LARA_FLOW_ANOMALY_LOG_LEVEL', 'info'), // null = off
+    'channel' => env('SAGA_LARA_FLOW_LOG_CHANNEL'),                     // null = app default
+],
+```
+
+Grep for `claim_lost`, `outcome_rejected` and `batch_finished_early`; each line carries the run id,
+row id, sequence and class. They are not written to `flow_events`, which records the run's business
+history — an abandoned attempt changed nothing in it. See
+[Reclaim & recovery](./reclaim-and-recovery.md) for what each one means and what to do about it.
+
+:::tip A lock TTL is not the same as reclaim
+`action_ttl_seconds` does not answer "when can a stuck `Running` step be retried". It governs a
+**cache key**, not the database row, and stops applying at all when `enabled` is `false`. The
+mechanism for the row itself is `reclaim` — see [Reclaim & recovery](./reclaim-and-recovery.md),
+which compares it against every other "how long before we act" dial in the package.
+:::
 
 ## Determinism is the contract
 
