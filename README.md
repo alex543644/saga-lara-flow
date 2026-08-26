@@ -493,7 +493,7 @@ $this->tag('priority', 'high');
 // or several at once — idempotent across replays, re-tagging a key overwrites it
 $this->tags(['priority' => 'high', 'attempt' => 2, 'orders' => null]);
 
-// from outside — same semantics; withTags() because tags() is the read accessor
+// from outside — tags() reads, withTags() writes
 SagaFlow::loadFlow($runId)
     ->tag('payment-failed')
     ->withTags(['attempt' => 2]);
@@ -517,14 +517,15 @@ $stuck = SagaFlow::query()
 $handles = SagaFlow::query()->running()->handles();   // Collection<FlowHandle>
 $count   = SagaFlow::query()->failed()->count();
 
-// open waits (awaitSignal or retryOnSignal); parked steps only
+// runs whose wait is still open, from either seam
 SagaFlow::query()->whereAwaitingSignal('approval')->get();
+
+// runs holding a step parked by retryOnSignal()
 SagaFlow::query()->whereAwaitingRetrySignal('balance-refilled')->handles();
 ```
 
 Status shortcuts: `running()`, `waiting()`, `completed()`, `failed()`, plus `active()` /
 `signalable()` (Pending, Running, or Waiting) for finding a run to deliver a signal to.
-`whereAwaitingRetrySignal()` is a subset of `whereAwaitingSignal()` for the same name.
 
 Terminals: `get()`, `first()`, `count()`, `paginate()`, `handles()`, and `builder()` (the raw
 Eloquent builder for ordering/limits).

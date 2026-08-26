@@ -25,6 +25,9 @@ class FlowTag extends Model
 
     protected $guarded = [];
 
+    /**
+     * @return array<string, string>
+     */
     protected function casts(): array
     {
         return [

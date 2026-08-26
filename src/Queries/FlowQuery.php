@@ -61,13 +61,13 @@ readonly class FlowQuery
     }
 
     /**
-     * Runs with an open wait for a signal — whichever seam opened it: an explicit
-     * awaitSignal(), or a step parked by retryOnSignal(). A null $name matches any.
+     * Runs whose wait for a signal is still open, whichever seam opened it: an
+     * explicit awaitSignal(), or a step parked by retryOnSignal(). A null $name
+     * matches any name.
      *
-     * Nested with whereAwaitingRetrySignal(): every retry park also writes a Waiting
-     * row in flow_signals, so whereAwaitingRetrySignal() returns a subset of this
-     * filter for the same name. The two states are indistinguishable from
-     * flow_signals alone; the difference lives on action_runs.
+     * Only whereAwaitingRetrySignal() tells the two seams apart. Matching is on the
+     * signal row rather than the run's status, so compose with signalable() to skip
+     * runs that have already finished.
      */
     public function whereAwaitingSignal(?string $name = null): static
     {
@@ -86,10 +86,10 @@ readonly class FlowQuery
      * Runs holding a step parked by retryOnSignal(), i.e. an action_runs row in
      * awaiting_retry. A null $signal matches any retry signal.
      *
-     * Nested under whereAwaitingSignal(): every retry park also writes a Waiting
-     * row in flow_signals, so this returns a subset of whereAwaitingSignal() for
-     * the same name. Use this when you need the parked step (and its failure
-     * snapshot), not every run waiting on that name.
+     * A park opens a signal wait too, but the two settle at different moments:
+     * delivery marks the wait Received and a timeout marks it TimedOut, while the
+     * step stays parked until replay resumes the run. So this also finds a run whose
+     * signal arrived but whose resume never did.
      */
     public function whereAwaitingRetrySignal(?string $signal = null): static
     {

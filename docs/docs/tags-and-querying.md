@@ -37,15 +37,14 @@ $this->tags([
 ```
 
 ```php
-// from outside, on a loaded handle — same updateOrCreate semantics
+// from outside, on a loaded handle
 SagaFlow::loadFlow($runId)
     ->tag('payment-failed')
     ->withTags(['attempt' => 2, 'orders' => null]);
 ```
 
-Explicit tags passed to `withTags()` override attribute tags with the same key. The batch writer on
-a handle is `withTags()`, not `tags()`, because `FlowHandle::tags()` is already the read accessor
-and `CreateWorkflowBuilder` already uses `withTags()` for the same write.
+Explicit tags passed to `withTags()` override attribute tags with the same key. On a handle,
+`tags()` reads and `withTags()` writes.
 
 Re-tagging an existing key overwrites its value rather than adding a second tag — the database
 enforces one row per `(flow_run_id, key)`. Both `tag()` and `tags()` / `withTags()` are idempotent
@@ -53,9 +52,9 @@ across replays — safe to call unconditionally at the top of `handle()`.
 
 :::caution Outside tags vs workflow tags
 Tags are not history: they carry no sequence and are never consulted during replay. A workflow
-calling `$this->tag('x', ...)` in `handle()` re-runs that write on **every replay**, so a value a
-host application set through `FlowHandle::tag('x', ...)` is overwritten the next time the run
-resumes. Tag keys written from outside should not collide with keys the workflow writes itself.
+calling `$this->tag('x', ...)` in `handle()` re-runs that write on **every replay**, overwriting
+whatever a host set under the same key. Keys written from outside should not collide with keys the
+workflow writes itself.
 :::
 
 ## Querying runs
@@ -81,12 +80,10 @@ $stuck = SagaFlow::query()
   or `Waiting`. Use this to find a run to deliver a signal to: a flow parked on `awaitSignal()` is
   `Waiting`, not `Running`, so `running()` would miss it.
 - `whereWorkflow(string $workflowClass)`
-- `whereAwaitingSignal(?string $name = null)` — runs with an open wait for a signal, whichever seam
-  opened it (`awaitSignal()` or `retryOnSignal()`). A null `$name` matches any.
+- `whereAwaitingSignal(?string $name = null)` — runs whose wait for a signal is still open,
+  whichever seam opened it (`awaitSignal()` or `retryOnSignal()`). A null `$name` matches any.
 - `whereAwaitingRetrySignal(?string $signal = null)` — runs holding a step parked by
-  `retryOnSignal()` (`action_runs` in `awaiting_retry`). A null `$signal` matches any. This is a
-  **subset** of `whereAwaitingSignal()` for the same name: every retry park also writes a Waiting
-  row in `flow_signals`, so the two states are indistinguishable from signals alone.
+  `retryOnSignal()`, i.e. an `action_runs` row in `awaiting_retry`. A null `$signal` matches any.
 - `before(DateTimeInterface)` / `after(DateTimeInterface)` (both filter `created_at`)
 
 ```php
@@ -97,12 +94,25 @@ SagaFlow::query()->whereAwaitingSignal('approval')->get();
 SagaFlow::query()->whereAwaitingRetrySignal('balance-refilled')->handles();
 ```
 
+### Waits and parked steps
+
+Both seams park the run as `Waiting` and open a signal row, so `flow_signals` alone cannot tell them
+apart. What separates them lives on `action_runs`:
+
 | | `awaitSignal('approval')` | `retryOnSignal('balance-refilled')` |
 |---|---|---|
 | `flow_runs.status` | `waiting` | `waiting` |
 | row in `flow_signals` | `approval / waiting` | `balance-refilled / waiting` |
 | row in `action_runs` at that wait | none | `awaiting_retry`, `retry_signal` set |
 | failure snapshot for operators | none | `exception: {class, message, code}` |
+
+The two also stop matching at different moments. Delivery marks the wait `Received`, a timeout marks
+it `TimedOut`, while the parked step keeps its `awaiting_retry` status until replay resumes the run.
+In that gap only `whereAwaitingRetrySignal()` matches — which is what makes it the filter that finds
+a run whose signal arrived but whose resume never did.
+
+Both match on the rows a run holds, not on its status: a run cancelled while parked still carries
+the wait and the parked step. Compose with `signalable()` to exclude those.
 
 ### Terminals
 

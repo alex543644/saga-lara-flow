@@ -15,7 +15,7 @@ trait ProvidesFlowMetadata
     {
         $this->runtime->run()->tags()->updateOrCreate(
             ['key' => $key],
-            ['value' => $value],
+            ['value' => $value === null ? null : (string) $value],
         );
     }
 

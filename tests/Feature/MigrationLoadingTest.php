@@ -1,5 +1,7 @@
 <?php
 
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 // The provider calls runsMigrations(), so a host app installs with just
@@ -50,9 +52,9 @@ it('adds the retry-on-signal columns to action_runs', function (): void {
 });
 
 it('rolls the retry-on-signal columns back down again', function (): void {
-    // The awaiting-retry index references retry_signal; drop it first (same order
+    // The wait index references retry_signal; drop it first (same order
     // migrate:rollback would use) or SQLite refuses the column drop.
-    $index = include __DIR__.'/../../database/migrations/2026_08_26_000000_index_awaiting_retry_and_unique_flow_tag_keys.php';
+    $index = include __DIR__.'/../../database/migrations/2026_08_26_000000_index_signal_waits.php';
     $index->down();
 
     $migration = include __DIR__.'/../../database/migrations/2026_08_21_000000_add_retry_on_signal_to_action_runs.php';
@@ -68,4 +70,117 @@ it('rolls the retry-on-signal columns back down again', function (): void {
     $index->up();
 
     expect(Schema::hasColumn('saga_action_runs', 'retry_signal'))->toBeTrue();
+});
+
+it('indexes the wait lookups and narrows the tag key unique', function (): void {
+    $columns = fn (string $table) => collect(Schema::getIndexes($table))->pluck('columns');
+    $uniques = fn (string $table) => collect(Schema::getIndexes($table))
+        ->where('unique', true)
+        ->pluck('columns');
+
+    // Both wait filters read across runs, so the signal name and the retry signal
+    // have to lead their index — the shipped ones lead with flow_run_id.
+    expect($columns('saga_flow_signals'))->toContain(['status', 'name', 'flow_run_id'])
+        ->and($columns('saga_action_runs'))->toContain(['status', 'retry_signal', 'flow_run_id'])
+        ->and($uniques('saga_flow_tags'))->toContain(['flow_run_id', 'key'])
+        ->and($uniques('saga_flow_tags'))->not->toContain(['flow_run_id', 'key', 'value']);
+});
+
+it('rolls the wait indexes back down again, and re-runs cleanly over its own work', function (): void {
+    $migration = include __DIR__.'/../../database/migrations/2026_08_26_000000_index_signal_waits.php';
+    $columns = fn (string $table) => collect(Schema::getIndexes($table))->pluck('columns');
+
+    $migration->down();
+
+    expect($columns('saga_flow_signals'))->not->toContain(['status', 'name', 'flow_run_id'])
+        ->and($columns('saga_action_runs'))->not->toContain(['status', 'retry_signal', 'flow_run_id']);
+
+    // MySQL applies neither statement inside a transaction, so a run that died
+    // between them has to be repeatable.
+    $migration->down();
+    $migration->up();
+    $migration->up();
+
+    expect($columns('saga_flow_signals'))->toContain(['status', 'name', 'flow_run_id'])
+        ->and($columns('saga_action_runs'))->toContain(['status', 'retry_signal', 'flow_run_id']);
+});
+
+it('rolls the tag key unique back down again, and re-runs cleanly over its own work', function (): void {
+    $migration = include __DIR__.'/../../database/migrations/2026_08_26_000001_unique_flow_tag_keys.php';
+    $uniques = fn () => collect(Schema::getIndexes('saga_flow_tags'))->where('unique', true)->pluck('columns');
+
+    $migration->down();
+
+    expect($uniques())->toContain(['flow_run_id', 'key', 'value']);
+
+    $migration->down();
+    $migration->up();
+    $migration->up();
+
+    expect($uniques())->toContain(['flow_run_id', 'key'])
+        ->and($uniques())->not->toContain(['flow_run_id', 'key', 'value']);
+});
+
+it('collapses tag keys that the wider unique had let diverge', function (): void {
+    $migration = include __DIR__.'/../../database/migrations/2026_08_26_000001_unique_flow_tag_keys.php';
+    $migration->down();
+
+    DB::table('saga_flow_tags')->insert([
+        ['flow_run_id' => 'run-1', 'key' => 'stage', 'value' => 'charged'],
+        ['flow_run_id' => 'run-1', 'key' => 'stage', 'value' => 'shipped'],
+        ['flow_run_id' => 'run-1', 'key' => 'tenant', 'value' => 'acme'],
+        ['flow_run_id' => 'run-2', 'key' => 'stage', 'value' => 'charged'],
+    ]);
+
+    $migration->up();
+
+    // Only the diverged key loses a row, and the newest write is the one kept.
+    expect(DB::table('saga_flow_tags')->orderBy('id')->get()->map(
+        fn ($tag): string => "{$tag->flow_run_id}:{$tag->key}={$tag->value}",
+    )->all())->toBe(['run-1:stage=shipped', 'run-1:tenant=acme', 'run-2:stage=charged']);
+});
+
+it('carries on from whichever half of the tag key swap already happened', function (): void {
+    $migration = include __DIR__.'/../../database/migrations/2026_08_26_000001_unique_flow_tag_keys.php';
+    $uniques = fn () => collect(Schema::getIndexes('saga_flow_tags'))
+        ->where('unique', true)
+        ->where('primary', false)
+        ->pluck('name')
+        ->all();
+
+    // Died after the narrow unique went on, before the wide one came off.
+    Schema::table('saga_flow_tags', function (Blueprint $table): void {
+        $table->unique(['flow_run_id', 'key', 'value'], 'saga_flow_tags_flow_run_id_key_value_unique');
+    });
+
+    $migration->up();
+
+    expect($uniques())->toBe(['saga_flow_tags_flow_run_id_key_unique']);
+
+    // Died with neither on — the state the reverse order used to strand a table in.
+    Schema::table('saga_flow_tags', function (Blueprint $table): void {
+        $table->dropUnique('saga_flow_tags_flow_run_id_key_unique');
+    });
+
+    $migration->up();
+
+    expect($uniques())->toBe(['saga_flow_tags_flow_run_id_key_unique']);
+});
+
+it('keeps the tag value written last, not the row inserted last', function (): void {
+    $migration = include __DIR__.'/../../database/migrations/2026_08_26_000001_unique_flow_tag_keys.php';
+    $migration->down();
+
+    DB::table('saga_flow_tags')->insert([
+        ['id' => 1, 'flow_run_id' => 'run-1', 'key' => 'stage', 'value' => 'charged', 'updated_at' => now()],
+        ['id' => 2, 'flow_run_id' => 'run-1', 'key' => 'stage', 'value' => 'shipped', 'updated_at' => now()],
+    ]);
+
+    // updateOrCreate rewrites the row it matched instead of inserting a new one, so
+    // the newest value can sit on the lower id.
+    DB::table('saga_flow_tags')->where('id', 1)->update(['value' => 'delivered', 'updated_at' => now()->addMinute()]);
+
+    $migration->up();
+
+    expect(DB::table('saga_flow_tags')->pluck('value', 'id')->all())->toBe([1 => 'delivered']);
 });
