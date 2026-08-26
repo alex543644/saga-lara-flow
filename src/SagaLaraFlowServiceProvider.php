@@ -46,6 +46,7 @@ class SagaLaraFlowServiceProvider extends PackageServiceProvider
             ->hasConfigFile()
             ->hasMigration('2026_07_02_000000_create_saga_lara_flow_initial_tables')
             ->hasMigration('2026_08_21_000000_add_retry_on_signal_to_action_runs')
+            ->hasMigration('2026_08_26_000000_index_awaiting_retry_and_unique_flow_tag_keys')
             ->runsMigrations()
             ->hasCommands([
                 MakeWorkflowCommand::class,

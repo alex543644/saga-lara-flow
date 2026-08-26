@@ -37,7 +37,7 @@ $this->tags([
 ```
 
 ```php
-// from outside, on a loaded handle — same updateOrCreate semantics
+// from outside, on a loaded handle — same upsert semantics
 SagaFlow::loadFlow($runId)
     ->tag('payment-failed')
     ->withTags(['attempt' => 2, 'orders' => null]);
@@ -47,9 +47,9 @@ Explicit tags passed to `withTags()` override attribute tags with the same key. 
 a handle is `withTags()`, not `tags()`, because `FlowHandle::tags()` is already the read accessor
 and `CreateWorkflowBuilder` already uses `withTags()` for the same write.
 
-Re-tagging an existing key overwrites its value rather than adding a second tag, and both `tag()`
-and `tags()` / `withTags()` are idempotent across replays — safe to call unconditionally at the top
-of `handle()`.
+Re-tagging an existing key overwrites its value rather than adding a second tag — the database
+enforces one row per `(flow_run_id, key)`. Both `tag()` and `tags()` / `withTags()` are idempotent
+across replays — safe to call unconditionally at the top of `handle()`.
 
 :::caution Outside tags vs workflow tags
 Tags are not history: they carry no sequence and are never consulted during replay. A workflow

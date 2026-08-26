@@ -13,9 +13,10 @@ use DiscoveryUkraine\SagaLaraFlow\Tests\Fixtures\TwoStepWorkflow;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 
 /**
- * @param array<string, ?string> $tags
+ * @param  array<string, ?string>  $tags
  */
-function makeQueryableRun(FlowStatus $status, string $workflowClass, array $tags = []): FlowRun {
+function makeQueryableRun(FlowStatus $status, string $workflowClass, array $tags = []): FlowRun
+{
     $normalized = [];
 
     foreach ($tags as $key => $value) {

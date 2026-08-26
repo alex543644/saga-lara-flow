@@ -13,10 +13,7 @@ trait ProvidesFlowMetadata
      */
     public function tag(string $key, string|int|null $value = null): void
     {
-        $this->runtime->run()->tags()->updateOrCreate(
-            ['key' => $key],
-            ['value' => $value === null ? null : (string) $value],
-        );
+        $this->tags([$key => $value]);
     }
 
     /**
@@ -27,9 +24,17 @@ trait ProvidesFlowMetadata
      */
     public function tags(array $tags): void
     {
-        foreach ($tags as $key => $value) {
-            $this->tag($key, $value);
+        $rows = $this->runtime->run()->tags()->getRelated()::attributesForUpsert($tags);
+
+        if ($rows === []) {
+            return;
         }
+
+        $this->runtime->run()->tags()->upsert(
+            $rows,
+            uniqueBy: ['flow_run_id', 'key'],
+            update: ['value'],
+        );
     }
 
     public function runId(): string

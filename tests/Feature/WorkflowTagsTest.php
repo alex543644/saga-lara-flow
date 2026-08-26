@@ -26,7 +26,7 @@ it('attaches several tags at once from inside the workflow', function () {
 it('never duplicates a repeated tag key', function () {
     $run = SagaFlow::create(TaggingWorkflow::class)->runSync();
 
-    // 'priority' is written twice by the workflow, but updateOrCreate matches on
+    // 'priority' is written twice by the workflow, but upsert conflicts on
     // (flow_run_id, key), so it stays a single row.
     expect($run->tags()->where('key', 'priority')->count())->toBe(1)
         ->and($run->tags()->count())->toBe(4);
@@ -56,7 +56,7 @@ it('tags a run from outside the workflow through FlowHandle', function () {
         ->tag('payment-failed')
         ->withTags(['attempt' => 2, 'orders' => null]);
 
-    // Same updateOrCreate semantics as the workflow trait: int cast to string,
+    // Same upsert semantics as the workflow trait: int cast to string,
     // null value allowed, re-tagging a key overwrites rather than duplicating.
     expect($handle->run()->tags()->pluck('value', 'key')->all())
         ->toEqualCanonicalizing([
