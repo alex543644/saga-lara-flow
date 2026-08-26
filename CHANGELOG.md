@@ -13,9 +13,8 @@ so two concurrent first writes with different values could both insert. A migrat
 - replaces that unique with `(flow_run_id, key)`,
 - adds `(status, retry_signal, flow_run_id)` on `action_runs` for `whereAwaitingRetrySignal()`.
 
-`ProvidesFlowMetadata::tags()` / `tag()` and `FlowHandle::withTags()` / `tag()` write through a
-single `upsert` on `(flow_run_id, key)`. Value casting still goes through `AsTagValue` via
-`FlowTag::attributesForUpsert()` (Eloquent `upsert` skips model casts).
+Tag writers keep `updateOrCreate` on `(flow_run_id, key)` so `AsTagValue` and model events still
+run. The unique constraint is what makes “one row per key” hold under concurrency.
 
 ### Added: query parked waits and tag runs from outside (#9)
 
@@ -27,7 +26,7 @@ close that gap, and `FlowHandle` gains the same tag writers the workflow trait a
   (`awaitSignal()` or `retryOnSignal()`).
 - `FlowQuery::whereAwaitingRetrySignal(?string $signal = null)` — runs holding an
   `awaiting_retry` step. Nested under `whereAwaitingSignal()` for the same name.
-- `FlowHandle::tag()` / `withTags()` — upsert semantics matching
+- `FlowHandle::tag()` / `withTags()` — `updateOrCreate` semantics matching
   `ProvidesFlowMetadata`, without colliding with the existing `tags()` read accessor.
 
 Tags written from outside should not use keys the workflow writes in `handle()`: those writes

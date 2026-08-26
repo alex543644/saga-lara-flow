@@ -15,8 +15,9 @@
 php artisan migrate
 ```
 
-Tag writers (`$this->tags()` / `FlowHandle::withTags()`) now upsert on that unique. Behaviour for
-healthy data is unchanged: one value per key per run, last write wins.
+Tag writers (`$this->tags()` / `FlowHandle::withTags()`) still use `updateOrCreate` on
+`(flow_run_id, key)`. Behaviour for healthy data is unchanged: one value per key per run, last
+write wins.
 
 ## From 1.0.x to 1.1.0
 

@@ -32,30 +32,6 @@ class FlowTag extends Model
         ];
     }
 
-    /**
-     * Shape a key => value map for upsert(). Upsert bypasses Eloquent casts, so
-     * this applies the value cast explicitly.
-     *
-     * @param  array<string, string|int|null>  $tags
-     * @return list<array{key: string, value: ?string}>
-     */
-    public static function attributesForUpsert(array $tags): array
-    {
-        $model = new static;
-        $rows = [];
-
-        foreach ($tags as $key => $value) {
-            $model->setAttribute('value', $value);
-
-            $rows[] = [
-                'key' => (string) $key,
-                'value' => $model->getAttributes()['value'] ?? null,
-            ];
-        }
-
-        return $rows;
-    }
-
     public function flowRun(): BelongsTo
     {
         return $this->belongsTo(config('saga-lara-flow.models.flow_run'), 'flow_run_id');

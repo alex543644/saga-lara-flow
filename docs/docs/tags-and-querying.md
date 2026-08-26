@@ -37,7 +37,7 @@ $this->tags([
 ```
 
 ```php
-// from outside, on a loaded handle — same upsert semantics
+// from outside, on a loaded handle — same updateOrCreate semantics
 SagaFlow::loadFlow($runId)
     ->tag('payment-failed')
     ->withTags(['attempt' => 2, 'orders' => null]);

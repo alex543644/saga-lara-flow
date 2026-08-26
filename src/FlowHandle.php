@@ -63,8 +63,8 @@ readonly class FlowHandle
     }
 
     /**
-     * Attach a queryable tag to this run. Same upsert semantics as the
-     * workflow-side tag(): conflict on (flow_run_id, key), overwrite the value.
+     * Attach a queryable tag to this run. Same updateOrCreate semantics as the
+     * workflow-side tag(): match on (flow_run_id, key), overwrite the value.
      *
      * Tags are not history — they carry no sequence and are never consulted during
      * replay. A workflow calling $this->tag('x', ...) in handle() re-runs that
@@ -73,7 +73,11 @@ readonly class FlowHandle
      */
     public function tag(string $key, string|int|null $value = null): static
     {
-        return $this->withTags([$key => $value]);
+        $this->withTags([
+            $key => $value,
+        ]);
+
+        return $this;
     }
 
     /**
@@ -84,16 +88,16 @@ readonly class FlowHandle
      */
     public function withTags(array $tags): static
     {
-        $rows = $this->flowRun->tags()->getRelated()::attributesForUpsert($tags);
-
-        if ($rows !== []) {
-            $this->flowRun->tags()->upsert(
-                $rows,
-                uniqueBy: ['flow_run_id', 'key'],
-                update: ['value'],
+        /**
+         * Use updateOrCreate instead of upsert
+         * to apply casts, events, etc.
+         * */
+        foreach ($tags as $key => $value) {
+            $this->flowRun->tags()->updateOrCreate(
+                ['key' => $key],
+                ['value' => $value],
             );
         }
-
         $this->flowRun->load('tags');
 
         return $this;
