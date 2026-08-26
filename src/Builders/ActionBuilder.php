@@ -7,16 +7,20 @@ use DateTimeInterface;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\ActionRunRepository;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\Serializer;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\SignalRepository;
+use DiscoveryUkraine\SagaLaraFlow\Data\ActionSchedule;
 use DiscoveryUkraine\SagaLaraFlow\Data\CompensationDefinition;
 use DiscoveryUkraine\SagaLaraFlow\Enums\ActionStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\CompensationFailurePolicy;
 use DiscoveryUkraine\SagaLaraFlow\Enums\RunMode;
 use DiscoveryUkraine\SagaLaraFlow\Enums\SignalStatus;
+use DiscoveryUkraine\SagaLaraFlow\Enums\StepExecution;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\ActionClaimFailedException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\ActionFailedException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\FlowExpiredException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\HistoryContractMismatchException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\Internal\FlowSuspended;
 use DiscoveryUkraine\SagaLaraFlow\Models\ActionRun;
+use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowSignal;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\ActionDispatcher;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\ActionRecorder;
@@ -81,6 +85,14 @@ class ActionBuilder
      */
     private ?array $retryOnly = null;
 
+    private ?int $reclaimStaleAfterSeconds = null;
+
+    private ?bool $reclaimStaleEnabled = null;
+
+    private ?int $compensationReclaimStaleAfterSeconds = null;
+
+    private ?bool $compensationReclaimStaleEnabled = null;
+
     /**
      * @param  array<int, mixed>  $arguments
      */
@@ -107,6 +119,36 @@ class ActionBuilder
     public function onCompensationFailure(CompensationFailurePolicy $policy): static
     {
         $this->actionCompensationFailurePolicy = $policy;
+
+        return $this;
+    }
+
+    /**
+     * Same idea as reclaimStaleAfter(), but for this step's registered compensation
+     * (sagas.reclaim.stale_running): allow a compensation row still Running to be
+     * reclaimed once it has sat this many seconds since started_at.
+     */
+    public function reclaimCompensationStaleAfter(int $seconds): static
+    {
+        if ($seconds < 0) {
+            throw new InvalidArgumentException(
+                "reclaimCompensationStaleAfter() seconds must be zero or greater, got {$seconds}.",
+            );
+        }
+
+        $this->compensationReclaimStaleAfterSeconds = $seconds;
+
+        return $this;
+    }
+
+    /**
+     * Force this step's compensation stale-Running reclaim on or off, independently
+     * of sagas.reclaim.stale_running.enabled. See enableStaleReclaim() for the same
+     * idea applied to the step's own execution.
+     */
+    public function enableCompensationStaleReclaim(bool $enabled = true): static
+    {
+        $this->compensationReclaimStaleEnabled = $enabled;
 
         return $this;
     }
@@ -141,6 +183,40 @@ class ActionBuilder
     public function expiresAt(?DateTimeInterface $expiresAt): static
     {
         $this->expiresAt = $expiresAt;
+
+        return $this;
+    }
+
+    /**
+     * Allow this step's own claim to reclaim a row still Running once it has sat
+     * this many seconds since started_at — recognizing a worker that died
+     * mid-execution. Also enables the mechanism for this step regardless of
+     * actions.reclaim.stale_running.enabled. See enableStaleReclaim() to toggle the
+     * mechanism without changing (or without knowing) the threshold.
+     */
+    public function reclaimStaleAfter(int $seconds): static
+    {
+        if ($seconds < 0) {
+            throw new InvalidArgumentException(
+                "reclaimStaleAfter() seconds must be zero or greater, got {$seconds}.",
+            );
+        }
+
+        $this->reclaimStaleAfterSeconds = $seconds;
+
+        return $this;
+    }
+
+    /**
+     * Force this step's stale-Running reclaim on or off, independently of
+     * actions.reclaim.stale_running.enabled — in either direction: turn it on for one
+     * step while it stays off globally, or off for one step while it is on globally.
+     * With $enabled = true and no threshold set via reclaimStaleAfter(), the step
+     * uses config's after_seconds.
+     */
+    public function enableStaleReclaim(bool $enabled = true): static
+    {
+        $this->reclaimStaleEnabled = $enabled;
 
         return $this;
     }
@@ -236,73 +312,106 @@ class ActionBuilder
         }
 
         $dispatcher = app(ActionDispatcher::class);
-
-        $hasCompensation = $this->compensation !== null;
-        $continueOnFailure = $this->resolvedContinueOnFailure();
-        $expiresAt = $this->resolvedExpiresAt();
-        $actionName = $this->resolvedActionName();
-        // Only a step that carries the policy gets a ceiling written. Storing the
-        // global default on every action would leave an unrelated number in the
-        // column, and awaitRetry()'s ??= would then keep it instead of the ceiling
-        // the seam actually parked on when a later deploy adds retryOnSignal().
-        $retrySignalMaxAttempts = $this->retrySignal === null ? null : $this->resolvedMaxRetries();
+        $schedule = $this->schedule();
 
         if ($this->runtime->mode() === RunMode::Sync) {
-            try {
-                $dispatcher->runInline(
-                    $flowRun,
-                    $sequence,
-                    $this->actionClass,
-                    $this->arguments,
-                    $hasCompensation,
-                    $continueOnFailure,
-                    expiresAt: $expiresAt,
-                    actionName: $actionName,
-                    retrySignal: $this->retrySignal,
-                    retrySignalMaxAttempts: $retrySignalMaxAttempts,
-                );
-            } catch (Throwable $exception) {
-                // A step with a retry policy is resolved solely on replay: only the
-                // seam knows the only-filter and the budget. Replay so it sees the
-                // Failed row and decides whether to park or to give up — but only
-                // when the row really did fail. A throw from before that (a listener,
-                // an observer, an action class that will not resolve) leaves nothing
-                // for the seam to read, and replaying would suspend a sync run on a
-                // job that does not exist.
-                if ($this->retrySignal !== null && $this->recordedFailure($flowRun->id, $sequence)) {
-                    $suspender->suspendInline('action', $sequence);
-                }
+            $this->runInlineThenSuspend($dispatcher, $schedule, $flowRun, $sequence);
+        }
 
-                // Optional step: no retries inline, so give up now — mark it
-                // OptionalFailed and replay so the seam resolves the fallback.
-                if ($continueOnFailure) {
-                    $this->markOptionalFailed($flowRun->id, $sequence);
+        $dispatcher->dispatch($flowRun, $sequence, $schedule);
 
-                    $suspender->suspendInline('action', $sequence);
-                }
+        $suspender->suspend('action', $sequence);
+    }
 
-                $this->registerFailedStepCompensation($flowRun->id, $sequence);
+    /**
+     * Everything this builder has resolved about the step, in the shape the dispatcher
+     * and the recorder consume. Both transports schedule from the same description.
+     */
+    private function schedule(): ActionSchedule
+    {
+        return new ActionSchedule(
+            actionClass: $this->actionClass,
+            arguments: $this->arguments,
+            hasCompensation: $this->compensation !== null,
+            continueOnFailure: $this->resolvedContinueOnFailure(),
+            expiresAt: $this->resolvedExpiresAt(),
+            actionName: $this->resolvedActionName(),
+            retrySignal: $this->retrySignal,
+            // Only a step that carries the policy gets a ceiling written. Storing the
+            // global default on every action would leave an unrelated number in the
+            // column, and awaitRetry()'s ??= would then keep it instead of the ceiling
+            // the seam actually parked on when a later deploy adds retryOnSignal().
+            retrySignalMaxAttempts: $this->retrySignal === null ? null : $this->resolvedMaxRetries(),
+            reclaimStaleAfterSeconds: $this->reclaimStaleAfterSeconds,
+            reclaimStaleEnabled: $this->reclaimStaleEnabled,
+        );
+    }
 
-                throw $exception;
-            }
+    /**
+     * Sync mode: run the step in this process, then replay. Never returns — every path
+     * out either suspends or rethrows.
+     *
+     * @throws FlowSuspended
+     * @throws Throwable
+     */
+    private function runInlineThenSuspend(
+        ActionDispatcher $dispatcher,
+        ActionSchedule $schedule,
+        FlowRun $flowRun,
+        int $sequence,
+    ): never {
+        try {
+            // The result needs no branching: a step that ran and one that was
+            // superseded mid-run both resolve on the replay below, from whatever the
+            // row ended up holding.
+            $dispatcher->runInline($flowRun, $sequence, $schedule);
+        } catch (ActionClaimFailedException $exception) {
+            // A broken invariant, not a retryable business failure — nothing was
+            // recorded on the row for the checks below to make sense of.
+            throw $exception;
+        } catch (Throwable $exception) {
+            $this->settleInlineFailure($exception, $schedule, $flowRun, $sequence);
+        }
+
+        app(FlowSuspender::class)->suspendInline('action', $sequence);
+    }
+
+    /**
+     * Decide what an inline throw means, in the order the outcomes exclude each other.
+     * Never returns: it either suspends so replay resolves the step, or rethrows.
+     *
+     * @throws FlowSuspended
+     * @throws Throwable
+     */
+    private function settleInlineFailure(
+        Throwable $exception,
+        ActionSchedule $schedule,
+        FlowRun $flowRun,
+        int $sequence,
+    ): never {
+        $suspender = app(FlowSuspender::class);
+
+        // A step with a retry policy is resolved solely on replay: only the seam knows
+        // the only-filter and the budget. Replay so it sees the Failed row and decides
+        // whether to park or to give up — but only when the row really did fail. A
+        // throw from before that (a listener, an observer, an action class that will
+        // not resolve) leaves nothing for the seam to read, and replaying would suspend
+        // a sync run on a job that does not exist.
+        if ($this->retrySignal !== null && $this->recordedFailure($flowRun->id, $sequence)) {
+            $suspender->suspendInline('action', $sequence);
+        }
+
+        // Optional step: no retries inline, so give up now — mark it OptionalFailed and
+        // replay so the seam resolves the fallback.
+        if ($schedule->continueOnFailure) {
+            $this->markOptionalFailed($flowRun->id, $sequence);
 
             $suspender->suspendInline('action', $sequence);
         }
 
-        $dispatcher->dispatch(
-            $flowRun,
-            $sequence,
-            $this->actionClass,
-            $this->arguments,
-            $hasCompensation,
-            $continueOnFailure,
-            $expiresAt,
-            $actionName,
-            $this->retrySignal,
-            $retrySignalMaxAttempts,
-        );
+        $this->registerFailedStepCompensation($flowRun->id, $sequence);
 
-        $suspender->suspend('action', $sequence);
+        throw $exception;
     }
 
     /**
@@ -638,7 +747,16 @@ class ActionBuilder
 
         if ($this->runtime->mode() === RunMode::Sync) {
             try {
-                $dispatcher->execute($step);
+                // retryAction() rewound this exact row to Pending in the same call
+                // chain, so nothing else can have taken it before we did: losing the
+                // claim here is a broken invariant. Being superseded afterwards is not
+                // — the monitor and the doctor act on this row from their own
+                // processes — and the replay below resolves whatever they left.
+                if ($dispatcher->execute($step) === StepExecution::ClaimLost) {
+                    throw ActionClaimFailedException::forAction($step->action_class, $sequence);
+                }
+            } catch (ActionClaimFailedException $exception) {
+                throw $exception;
             } catch (Throwable) {
                 // The failure is already persisted on the row; the replay below is
                 // what decides whether to park again or to give up.
@@ -869,6 +987,8 @@ class ActionBuilder
             $this->actionCompensationFailurePolicy,
             $this->groupCompensationFailurePolicy,
             $this->parallelGroupId,
+            $this->compensationReclaimStaleAfterSeconds,
+            $this->compensationReclaimStaleEnabled,
         ));
     }
 

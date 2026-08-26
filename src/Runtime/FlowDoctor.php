@@ -2,6 +2,7 @@
 
 namespace DiscoveryUkraine\SagaLaraFlow\Runtime;
 
+use Closure;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\ActionRunRepository;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\FlowRepository;
 use DiscoveryUkraine\SagaLaraFlow\Enums\ActionStatus;
@@ -30,11 +31,17 @@ use Throwable;
  *   R1  a stuck sequential Pending action (its RunActionJob was lost) → re-dispatch.
  *   R2  a stuck Waiting run with nothing in flight (its resume was lost) → re-wake;
  *       replay then advances it or parks it again.
+ *   R3  a stuck sequential Running action past its own reclaim window (opt-in via
+ *       actions.reclaim.stale_running — a worker died mid-execution) → re-dispatch.
  *
  * Each repaired entity carries repair_attempts + repair_available_at so a pass is
  * throttled per entity (exponential backoff) and gives up after max_attempts —
  * saga-flow:kick is the manual escape hatch. Batch-bound work (compensations,
- * parallel actions) and automatic Running re-drive are deliberately out of scope.
+ * parallel actions) is out of scope even for R3: recovering them would mean
+ * adding a job back into their Bus::batch, which needs the batch's id — not stored
+ * anywhere in this package's tables, only recoverable by looking its deterministic
+ * name up in Laravel's own job_batches table, a detail of the database batch driver
+ * specifically and not guaranteed for every host.
  */
 final readonly class FlowDoctor
 {
@@ -60,23 +67,55 @@ final readonly class FlowDoctor
         $grace = (int) config('saga-lara-flow.repair.grace_seconds', 60);
         $maxAttempts = (int) config('saga-lara-flow.repair.max_attempts', 10);
 
-        $redispatchedActions = 0;
-        $rewokenFlows = 0;
+        [$lostActions, $skippedLost] = $this->applyRule(
+            'redispatch_lost_actions',
+            fn (): iterable => $this->actionRunRepository->dueForRepair($limit, $grace, $maxAttempts),
+            fn (ActionRun $action): bool => $this->redispatchAction($action, $maxAttempts),
+        );
+
+        [$staleActions, $skippedStale] = $this->applyRule(
+            'redispatch_stale_running_actions',
+            fn (): iterable => $this->actionRunRepository->dueForStaleRunningRepair($limit, $maxAttempts),
+            fn (ActionRun $action): bool => $this->redispatchStaleRunningAction($action, $maxAttempts),
+        );
+
+        [$rewokenFlows, $skippedFlows] = $this->applyRule(
+            'wake_stuck_flows',
+            fn (): iterable => $this->flowRepository->dueForRepair($limit, $grace, $maxAttempts),
+            fn (FlowRun $run): bool => $this->wakeWaiting($run, $maxAttempts),
+        );
+
+        return new FlowRepairReport(
+            $lostActions + $staleActions,
+            $rewokenFlows,
+            $skippedLost + $skippedStale + $skippedFlows,
+        );
+    }
+
+    /**
+     * Run one repair rule if its config switch is on, returning [repaired, skipped].
+     * Candidates come from a closure so a disabled rule never queries for them.
+     *
+     * @template TEntity of ActionRun|FlowRun
+     *
+     * @param  Closure(): iterable<TEntity>  $candidates
+     * @param  Closure(TEntity): bool  $repair
+     * @return array{int, int}
+     */
+    private function applyRule(string $switch, Closure $candidates, Closure $repair): array
+    {
+        if (! config("saga-lara-flow.repair.{$switch}")) {
+            return [0, 0];
+        }
+
+        $repaired = 0;
         $skipped = 0;
 
-        if (config('saga-lara-flow.repair.redispatch_lost_actions')) {
-            foreach ($this->actionRunRepository->dueForRepair($limit, $grace, $maxAttempts) as $action) {
-                $this->redispatchAction($action, $maxAttempts) ? $redispatchedActions++ : $skipped++;
-            }
+        foreach ($candidates() as $entity) {
+            $repair($entity) ? $repaired++ : $skipped++;
         }
 
-        if (config('saga-lara-flow.repair.wake_stuck_flows')) {
-            foreach ($this->flowRepository->dueForRepair($limit, $grace, $maxAttempts) as $run) {
-                $this->wakeWaiting($run, $maxAttempts) ? $rewokenFlows++ : $skipped++;
-            }
-        }
-
-        return new FlowRepairReport($redispatchedActions, $rewokenFlows, $skipped);
+        return [$repaired, $skipped];
     }
 
     /**
@@ -95,6 +134,54 @@ final readonly class FlowDoctor
                 $lockedAction === null
                 || $lockedAction->status !== ActionStatus::Pending
                 || $lockedAction->parallel_group !== null
+                || $lockedAction->repair_attempts >= $maxAttempts
+                || ! $this->repairWindowOpen($lockedAction->repair_available_at)
+            ) {
+                return false;
+            }
+
+            $flow = $lockedAction->flowRun;
+
+            // Never resurrect a step whose run is finished or rolling back.
+            if ($flow->isTerminal() || $flow->status === FlowStatus::Cancelling) {
+                return false;
+            }
+
+            $this->bumpThrottle($lockedAction);
+
+            $this->actionRecorder->actionRedispatched($lockedAction);
+
+            return true;
+        });
+
+        if ($confirmed) {
+            $this->dispatchActionJob($action->fresh() ?? $action);
+        }
+
+        return $confirmed;
+    }
+
+    /**
+     * R3: re-dispatch a fresh RunActionJob for a stuck sequential Running action past
+     * its own reclaim window (actions.reclaim.stale_running). Re-verifies staleness
+     * under a row lock — the row may have been reclaimed and restarted since the
+     * candidate was read — bumps the throttle, records the intervention, then
+     * dispatches after the transaction commits. Like R1 it only sends a job: the fresh
+     * job's own claim decides whether it wins the row.
+     *
+     * @throws Throwable
+     */
+    private function redispatchStaleRunningAction(ActionRun $action, int $maxAttempts): bool
+    {
+        $confirmed = $this->connection()->transaction(function () use ($action, $maxAttempts): bool {
+            $lockedAction = $this->lockAction($action->id);
+
+            if (
+                $lockedAction === null
+                || $lockedAction->status !== ActionStatus::Running
+                || $lockedAction->parallel_group !== null
+                || $lockedAction->reclaim_stale_at === null
+                || $lockedAction->reclaim_stale_at->isAfter(now())
                 || $lockedAction->repair_attempts >= $maxAttempts
                 || ! $this->repairWindowOpen($lockedAction->repair_available_at)
             ) {

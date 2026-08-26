@@ -39,6 +39,14 @@ final class SagaStepBuilder
      */
     private ?array $retryOnly = null;
 
+    private ?int $reclaimStaleAfterSeconds = null;
+
+    private ?bool $reclaimStaleEnabled = null;
+
+    private ?int $compensationReclaimStaleAfterSeconds = null;
+
+    private ?bool $compensationReclaimStaleEnabled = null;
+
     /**
      * @param  array<int, mixed>  $arguments
      */
@@ -92,6 +100,46 @@ final class SagaStepBuilder
         return $this;
     }
 
+    /**
+     * Mirrors ActionBuilder::reclaimStaleAfter() for a step inside a group.
+     */
+    public function reclaimStaleAfter(int $seconds): self
+    {
+        $this->reclaimStaleAfterSeconds = $seconds;
+
+        return $this;
+    }
+
+    /**
+     * Mirrors ActionBuilder::enableStaleReclaim() for a step inside a group.
+     */
+    public function enableStaleReclaim(bool $enabled = true): self
+    {
+        $this->reclaimStaleEnabled = $enabled;
+
+        return $this;
+    }
+
+    /**
+     * Mirrors ActionBuilder::reclaimCompensationStaleAfter() for a step inside a group.
+     */
+    public function reclaimCompensationStaleAfter(int $seconds): self
+    {
+        $this->compensationReclaimStaleAfterSeconds = $seconds;
+
+        return $this;
+    }
+
+    /**
+     * Mirrors ActionBuilder::enableCompensationStaleReclaim() for a step inside a group.
+     */
+    public function enableCompensationStaleReclaim(bool $enabled = true): self
+    {
+        $this->compensationReclaimStaleEnabled = $enabled;
+
+        return $this;
+    }
+
     public function step(string $actionClass, mixed ...$arguments): self
     {
         return $this->saga->step($actionClass, ...$arguments);
@@ -140,6 +188,22 @@ final class SagaStepBuilder
                 $this->retryWaitSeconds,
                 $this->retryOnly,
             );
+        }
+
+        if ($this->reclaimStaleAfterSeconds !== null) {
+            $action->reclaimStaleAfter($this->reclaimStaleAfterSeconds);
+        }
+
+        if ($this->reclaimStaleEnabled !== null) {
+            $action->enableStaleReclaim($this->reclaimStaleEnabled);
+        }
+
+        if ($this->compensationReclaimStaleAfterSeconds !== null) {
+            $action->reclaimCompensationStaleAfter($this->compensationReclaimStaleAfterSeconds);
+        }
+
+        if ($this->compensationReclaimStaleEnabled !== null) {
+            $action->enableCompensationStaleReclaim($this->compensationReclaimStaleEnabled);
         }
 
         return $action

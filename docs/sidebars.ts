@@ -30,6 +30,7 @@ const sidebars: SidebarsConfig = {
         'tags-and-querying',
         'expiration-and-monitoring',
         'queues-locks-idempotency',
+        'reclaim-and-recovery',
         'synchronous-execution',
         'artisan-commands',
       ],

@@ -30,4 +30,15 @@ interface ActionRunRepository
      * @return iterable<int, ActionRun>
      */
     public function dueForRepair(int $limit, int $graceSeconds, int $maxAttempts): iterable;
+
+    /**
+     * Sequential Running action steps (parallel_group is null) past their own
+     * reclaim_stale_at, whose repair window is open and attempts are not exhausted,
+     * earliest deadline first, capped at $limit. Used by the doctor to re-dispatch a
+     * step whose worker died mid-execution. Only rows with a reclaim window resolved
+     * onto them carry that deadline, so with reclaim configured nowhere this is empty.
+     *
+     * @return iterable<int, ActionRun>
+     */
+    public function dueForStaleRunningRepair(int $limit, int $maxAttempts): iterable;
 }

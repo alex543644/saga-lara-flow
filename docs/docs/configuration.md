@@ -57,6 +57,7 @@ surrounding database transaction commits. Individual runs can override the conne
     'enabled' => true,
     'workflow_ttl_seconds' => 900,
     'action_ttl_seconds' => 900,
+    'compensation_ttl_seconds' => 900,
     'block_seconds' => 5,
     'prefix' => 'saga-lara-flow',
 ],
@@ -70,6 +71,28 @@ run — the idempotency guard. See [Queues, locks & idempotency](./queues-locks-
 `monitor.expiration.defaults` set implicit deadlines (seconds) for `run` / `action` / `signal` —
 `null` means no default. `repair.*` configures the doctor pass that recovers runs whose progress was
 lost to a dropped job. Both are covered in [Expiration & monitoring](./expiration-and-monitoring.md).
+
+## Reclaim
+
+`actions.reclaim.stale_running` and `sagas.reclaim.stale_running` — off by default — let a `Running`
+row be claimed again once it has sat long enough since `started_at` to suspect its worker died. Not
+the same thing as a lock TTL. With it off, a worker killed mid-step leaves that step stuck.
+[Reclaim & recovery](./reclaim-and-recovery.md) covers the mechanism, how it differs from the other
+timing dials, and the full config and per-step override surface.
+
+## Logging
+
+```php
+'logging' => [
+    'anomaly_level' => env('SAGA_LARA_FLOW_ANOMALY_LOG_LEVEL', 'info'), // null = off
+    'channel' => env('SAGA_LARA_FLOW_LOG_CHANNEL'),                     // null = app default
+],
+```
+
+The engine's second journal, for the things it absorbs silently: a claim lost to whoever already
+owned the row, an outcome write rejected because the row changed hands, and a batch already closed
+by a duplicate delivery. None of them fails a job, so these lines are the only trace. See
+[Reclaim & recovery](./reclaim-and-recovery.md).
 
 ## Policies
 

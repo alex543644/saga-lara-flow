@@ -10,9 +10,11 @@ use DiscoveryUkraine\SagaLaraFlow\Enums\FlowEventType;
 use DiscoveryUkraine\SagaLaraFlow\Events\CompensationCompleted;
 use DiscoveryUkraine\SagaLaraFlow\Events\CompensationFailed;
 use DiscoveryUkraine\SagaLaraFlow\Events\CompensationStarted;
+use DiscoveryUkraine\SagaLaraFlow\Events\CompensationStepStarted;
 use DiscoveryUkraine\SagaLaraFlow\Models\CompensationRun;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Throwable;
 
 /**
@@ -26,6 +28,7 @@ final readonly class CompensationRecorder
     public function __construct(
         private EventLog $events,
         private Serializer $serializer,
+        private AnomalyLog $anomalies,
     ) {}
 
     /**
@@ -64,6 +67,10 @@ final readonly class CompensationRecorder
             'status' => CompensationStatus::Pending,
             'continue_on_failure' => $policy === CompensationFailurePolicy::Continue,
             'arguments' => $definition->isClosure() ? null : $definition->arguments,
+            'reclaim_stale_after_seconds' => $this->resolveReclaimStaleAfterSeconds(
+                $entry->reclaimStaleAfterSeconds,
+                $entry->reclaimStaleEnabled,
+            ),
         ]);
 
         $compensation->save();
@@ -71,19 +78,108 @@ final readonly class CompensationRecorder
         return $compensation;
     }
 
-    public function startCompensation(CompensationRun $compensation): void
+    /**
+     * Same resolution shape as ActionRecorder::resolveReclaimStaleAfterSeconds(), read
+     * against the sagas.reclaim.stale_running config instead — the two mechanisms are
+     * switched independently.
+     */
+    private function resolveReclaimStaleAfterSeconds(?int $seconds, ?bool $enabled): ?int
     {
-        $compensation->status = CompensationStatus::Running;
-        $compensation->started_at = Carbon::now();
-        $compensation->save();
+        if ($enabled === false) {
+            return null;
+        }
+
+        if ($seconds !== null) {
+            return $seconds;
+        }
+
+        if ($enabled === true) {
+            return (int) config('saga-lara-flow.sagas.reclaim.stale_running.after_seconds');
+        }
+
+        return config('saga-lara-flow.sagas.reclaim.stale_running.enabled')
+            ? (int) config('saga-lara-flow.sagas.reclaim.stale_running.after_seconds')
+            : null;
     }
 
-    public function completeCompensation(CompensationRun $compensation, mixed $result): void
+    /**
+     * Atomically claim the row and move it to Running, returning false when the row is
+     * no longer claimable — settled already, or still Running before its reclaim
+     * deadline. Mirrors ActionRecorder::startAction() in every respect: the same
+     * compare-and-swap shape, the same enclosing transaction, the same absence of
+     * Eloquent model events (CompensationStepStarted and the flow_events entry are the
+     * supported way to observe it), and the same attempts counter.
+     *
+     * @throws Throwable
+     */
+    public function startCompensation(CompensationRun $compensation): bool
     {
+        return $compensation->getConnection()->transaction(function () use ($compensation): bool {
+            $now = Carbon::now();
+
+            $staleAfter = $compensation->reclaim_stale_after_seconds;
+
+            $claimed = $compensation->newQuery()
+                ->whereKey($compensation->getKey())
+                ->where(function ($query) use ($now): void {
+                    $query->where('status', CompensationStatus::Pending)
+                        ->orWhere(function ($query) use ($now): void {
+                            $query->where('status', CompensationStatus::Running)
+                                ->whereNotNull('reclaim_stale_at')
+                                ->where('reclaim_stale_at', '<=', $now);
+                        });
+                })
+                ->update([
+                    'status' => CompensationStatus::Running,
+                    'attempts' => DB::raw('attempts + 1'),
+                    'started_at' => $now,
+                    'reclaim_stale_at' => $staleAfter === null
+                        ? null
+                        : $now->copy()->addSeconds($staleAfter),
+                ]) === 1;
+
+            if (! $claimed) {
+                $this->anomalies->log(AnomalyLog::REASON_CLAIM_LOST, [
+                    'entity' => 'compensation',
+                    'flow_run_id' => $compensation->flow_run_id,
+                    'compensation_run_id' => $compensation->id,
+                    'sequence' => $compensation->sequence,
+                    'compensation_class' => $compensation->compensation_class,
+                ]);
+
+                return false;
+            }
+
+            $compensation->refresh();
+
+            $this->events->record(
+                $compensation->flowRun,
+                FlowEventType::CompensationStepStarted,
+                $compensation->sequence,
+                $compensation,
+            );
+
+            event(new CompensationStepStarted($compensation));
+
+            return true;
+        });
+    }
+
+    /**
+     * Record the compensation's result, fenced against the claim that produced it —
+     * see ActionRecorder::completeAction() for why. Returns whether it was recorded.
+     */
+    public function completeCompensation(CompensationRun $compensation, mixed $result): bool
+    {
+        $claimedAttempts = $compensation->attempts;
+
         $compensation->status = CompensationStatus::Completed;
         $compensation->result = $this->serializer->serialize($result);
         $compensation->finished_at = Carbon::now();
-        $compensation->save();
+
+        if (! $this->writeOutcome($compensation, $claimedAttempts, FlowEventType::CompensationCompleted)) {
+            return false;
+        }
 
         $this->events->record(
             $compensation->flowRun,
@@ -93,16 +189,22 @@ final readonly class CompensationRecorder
         );
 
         event(new CompensationCompleted($compensation));
+
+        return true;
     }
 
-    public function failCompensation(CompensationRun $compensation, Throwable $exception): void
+    public function failCompensation(CompensationRun $compensation, Throwable $exception): bool
     {
+        $claimedAttempts = $compensation->attempts;
         $exceptionArray = $this->exceptionToArray($exception);
 
         $compensation->status = CompensationStatus::Failed;
         $compensation->exception = $exceptionArray;
         $compensation->finished_at = Carbon::now();
-        $compensation->save();
+
+        if (! $this->writeOutcome($compensation, $claimedAttempts, FlowEventType::CompensationFailed)) {
+            return false;
+        }
 
         $this->events->record(
             $compensation->flowRun,
@@ -113,6 +215,45 @@ final readonly class CompensationRecorder
         );
 
         event(new CompensationFailed($compensation, $exception));
+
+        return true;
+    }
+
+    /**
+     * @see ActionRecorder::writeOutcome()
+     *
+     * Compensations have no expiry sweep, so the status condition guards nothing today;
+     * it holds the invariant locally rather than depending on no such writer ever
+     * being added.
+     */
+    private function writeOutcome(
+        CompensationRun $compensation,
+        int $claimedAttempts,
+        FlowEventType $outcome
+    ): bool {
+        $written = $compensation->newQuery()
+            ->whereKey($compensation->getKey())
+            ->where('attempts', $claimedAttempts)
+            ->where('status', CompensationStatus::Running)
+            ->update($compensation->getDirty()) === 1;
+
+        if (! $written) {
+            $this->anomalies->log(AnomalyLog::REASON_OUTCOME_REJECTED, [
+                'entity' => 'compensation',
+                'flow_run_id' => $compensation->flow_run_id,
+                'compensation_run_id' => $compensation->id,
+                'sequence' => $compensation->sequence,
+                'compensation_class' => $compensation->compensation_class,
+                'outcome' => $outcome->value,
+                'claimed_attempts' => $claimedAttempts,
+            ]);
+
+            return false;
+        }
+
+        $compensation->syncOriginal();
+
+        return true;
     }
 
     private function nextSequence(FlowRun $flowRun): int

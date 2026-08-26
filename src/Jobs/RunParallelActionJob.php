@@ -8,6 +8,7 @@ use DiscoveryUkraine\SagaLaraFlow\Middleware\LockMiddlewareFactory;
 use DiscoveryUkraine\SagaLaraFlow\Models\ActionRun;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\ActionDispatcher;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\ActionRecorder;
+use DiscoveryUkraine\SagaLaraFlow\Runtime\AnomalyLog;
 use Illuminate\Bus\Batchable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
@@ -58,10 +59,59 @@ class RunParallelActionJob implements ShouldQueue
             return;
         }
 
-        // Skip a step already settled out of band (Completed earlier, or Expired by
-        // the monitor — a late job must not resurrect an expired step).
-        if (! in_array($action->status, [ActionStatus::Completed, ActionStatus::Expired], true)) {
-            $dispatcher->execute($action);
+        // The claim inside execute() (ActionRecorder::startAction()) is the single
+        // source of truth: a step already settled out of band (Completed earlier, or
+        // Expired by the monitor) simply fails the claim and nothing runs. Parallel
+        // steps carry no retry-on-signal cycle today (0 always), but passing it
+        // explicitly keeps the guard correct if that ever changes.
+        if ($dispatcher->execute($action, expectedRetryGeneration: 0)->settled()) {
+            $this->wakeIfTheBatchClosedWithoutUs($action);
+        }
+    }
+
+    /**
+     * A batch cannot normally be finished while one of its own jobs is still inside
+     * handle() — the pending count only drops once this returns. Finding it finished
+     * means a duplicate delivery lost its claim, returned quietly, and drove the count
+     * to zero early. ResumeParallelBlock already fired then, and Laravel will not fire
+     * it again: its condition is (pendingJobs - failedJobs) === 0, and the next
+     * decrement takes the count to -1.
+     *
+     * The join therefore replayed while this step was still Running and parked the run
+     * with no wake left. An extra resume costs a replay that resolves to the same
+     * history; a missing one costs a run that hangs until repair.wake_stuck_flows.
+     */
+    private function wakeIfTheBatchClosedWithoutUs(ActionRun $action): void
+    {
+        $batch = $this->batch();
+
+        if ($batch === null || ! $batch->finished()) {
+            return;
+        }
+
+        app(AnomalyLog::class)->log(AnomalyLog::REASON_BATCH_FINISHED_EARLY, [
+            'entity' => 'parallel_action',
+            'flow_run_id' => $action->flow_run_id,
+            'action_run_id' => $action->id,
+            'sequence' => $action->sequence,
+            'action_class' => $action->action_class,
+            'batch_id' => $batch->id,
+        ]);
+
+        $flowRun = $action->flowRun;
+
+        $job = ResumeWorkflowJob::dispatch($action->flow_run_id);
+
+        if ($flowRun->connection !== null) {
+            $job->onConnection($flowRun->connection);
+        }
+
+        if ($flowRun->queue !== null) {
+            $job->onQueue($flowRun->queue);
+        }
+
+        if (config('saga-lara-flow.queue.after_commit')) {
+            $job->afterCommit();
         }
     }
 

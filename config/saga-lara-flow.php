@@ -59,8 +59,34 @@ return [
         'store' => env('SAGA_LARA_FLOW_LOCK_STORE'),
         'workflow_ttl_seconds' => 900,
         'action_ttl_seconds' => 900,
+
+        // Added in 1.2.0. An application that published this file earlier has a
+        // 'locks' array without this key — config merging is shallow, so it is not
+        // filled in for them. Missing/zero falls back to action_ttl_seconds (a
+        // compensation is a step, so the value tuned for steps applies), never to
+        // zero: zero means "no expiry" on Redis, and a lock a killed worker never
+        // releases would wedge the row forever.
+        'compensation_ttl_seconds' => 900,
+
         'block_seconds' => 5,
         'prefix' => 'saga-lara-flow',
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Logging
+    |--------------------------------------------------------------------------
+    */
+    'logging' => [
+        // A claim lost to a competing worker, an outcome write rejected because the
+        // row changed hands, a batch already closed by a duplicate delivery: all are
+        // normal under at-least-once delivery — not errors, and none of them fails a
+        // job. This log line is the only trace they leave, so the case can be found
+        // and debugged afterwards. null = silent.
+        'anomaly_level' => env('SAGA_LARA_FLOW_ANOMALY_LOG_LEVEL', 'info'),
+
+        // null = the application's default channel.
+        'channel' => env('SAGA_LARA_FLOW_LOG_CHANNEL'),
     ],
 
     /*
@@ -122,6 +148,16 @@ return [
         'redispatch_lost_actions' => true,
         // R2: re-wake flows stuck in the Waiting status after a resume that never fired.
         'wake_stuck_flows' => true,
+        // R3: re-dispatch stuck sequential Running actions past their own
+        // actions.reclaim.stale_running threshold (a worker that died mid-execution).
+        // Has no effect while that mechanism is off (its default) — this only
+        // decides whether the doctor additionally acts on rows it makes claimable.
+        // Parallel actions and compensations are out of scope: recovering them would
+        // mean re-adding a job to their Bus::batch, which needs the batch's id — not
+        // stored anywhere in this package's tables — looked up by name in Laravel's
+        // own job_batches table, a detail of the database batch driver specifically
+        // and not guaranteed for every host.
+        'redispatch_stale_running_actions' => true,
 
         'queue_looping' => ['enabled' => false, 'throttle_seconds' => 60],
     ],
@@ -171,6 +207,27 @@ return [
         'retry_on_signal' => [
             'max_retries' => null,
         ],
+
+        // A step's own atomic claim (see startAction()) accepts a row still Running
+        // only when it has sat that long since started_at — meant to recognize a
+        // worker that died mid-execution, not to interrupt one that is still alive.
+        //
+        // Off by default, and that default has a consequence worth knowing: with no
+        // window configured, a Running row is never claimed again by anything. A
+        // worker killed mid-step therefore leaves it Running for good — replay reads
+        // it as still in flight and parks the run, and saga-flow:kick does the same.
+        // The two ways to get automatic recovery are this setting (the step runs
+        // again) and monitor.expiration.defaults.action with saga-flow:monitor (the
+        // step is marked Expired and the run fails as a business error).
+        //
+        // Distinct from locks.action_ttl_seconds (a cache-lock TTL, a different layer
+        // entirely) — see the reclaim documentation for how the two relate.
+        'reclaim' => [
+            'stale_running' => [
+                'enabled' => false,
+                'after_seconds' => 900,
+            ],
+        ],
     ],
 
     /*
@@ -201,6 +258,17 @@ return [
         // must be idempotent and safe when the step actually did nothing. Override
         // per action/group via compensateStepOnSelfFailure() (precedence action > group > config).
         'compensate_failed_step' => false,
+
+        // Same mechanism as actions.reclaim, independently switched: a compensation
+        // row still Running is claimable again only once it has sat that long since
+        // started_at. Off by default. Compensations have no automatic retry of their
+        // own — this only concerns a worker that died mid-compensation.
+        'reclaim' => [
+            'stale_running' => [
+                'enabled' => false,
+                'after_seconds' => 900,
+            ],
+        ],
     ],
 
     /*

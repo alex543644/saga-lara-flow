@@ -7,7 +7,10 @@ use DiscoveryUkraine\SagaLaraFlow\Contracts\FlowRepository;
 use DiscoveryUkraine\SagaLaraFlow\Enums\CompensationStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\RunMode;
+use DiscoveryUkraine\SagaLaraFlow\Enums\StepExecution;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\ActionClaimFailedException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\CompensationFailedException;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\CompensationUnfinishedException;
 use DiscoveryUkraine\SagaLaraFlow\Jobs\RunCompensationJob;
 use DiscoveryUkraine\SagaLaraFlow\Models\CompensationRun;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
@@ -112,6 +115,8 @@ class SagaRunner
     /**
      * @param  list<CompensationEntry>  $level
      * @return bool whether a Stop-policy compensation failed (rollback must halt)
+     *
+     * @throws Throwable
      */
     private function runLevelSync(FlowRun $flowRun, array $level): bool
     {
@@ -122,7 +127,17 @@ class SagaRunner
 
             $compensationIds[] = $compensation->id;
 
-            $this->executor->execute($compensation, $entry->definition);
+            // The row was just created above, in this same call: nothing else can have
+            // taken it, so losing the claim is a broken invariant rather than a race.
+            // Nothing supersedes a compensation mid-run either — they carry no expiry
+            // sweep and the doctor leaves them alone — but the two are kept apart here
+            // so this stays an invariant guard and not a catch-all.
+            if ($this->executor->execute($compensation, $entry->definition) === StepExecution::ClaimLost) {
+                throw ActionClaimFailedException::forCompensation(
+                    $entry->definition->class ?? $entry->definition->type,
+                    $compensation->sequence,
+                );
+            }
         }
 
         return $this->levelStopped($compensationIds);
@@ -185,6 +200,12 @@ class SagaRunner
         if ($failed !== null) {
             $exception['compensation'] = $this->exceptionToArray(CompensationFailedException::for($failed))
                 + ['cause' => $failed->exception];
+        } elseif (($unfinished = $this->firstUnfinishedCompensation($flowRun)) !== null) {
+            // Recorded in the same place a failure would be, so a run that did not
+            // fully unwind never looks like one that did.
+            $exception['compensation'] = $this->exceptionToArray(
+                CompensationUnfinishedException::for($unfinished)
+            );
         }
 
         // A monitor-enforced expiration that rolled back lands in Expired, not Failed:
@@ -249,6 +270,12 @@ class SagaRunner
     }
 
     /**
+     * Whether a Stop-policy compensation on the level did not complete.
+     *
+     * Wider than "failed": a compensation still Pending or Running when its level
+     * finishes is one whose job was lost or whose worker died, and unwinding further
+     * on top of a step that may never have been undone is what Stop exists to prevent.
+     *
      * @param  list<string>  $compensationIds
      */
     private function levelStopped(array $compensationIds): bool
@@ -259,7 +286,7 @@ class SagaRunner
 
         return $this->compensationModel()->newQuery()
             ->whereIn('id', $compensationIds)
-            ->where('status', CompensationStatus::Failed)
+            ->whereNot('status', CompensationStatus::Completed)
             ->where('continue_on_failure', false)
             ->exists();
     }
@@ -269,6 +296,20 @@ class SagaRunner
         return $this->compensationModel()->newQuery()
             ->where('flow_run_id', $flowRun->id)
             ->where('status', CompensationStatus::Failed)
+            ->orderBy('sequence')
+            ->first();
+    }
+
+    /**
+     * The earliest compensation that never reached a terminal state. Reported only
+     * when no compensation actually failed — a real failure carries its own cause and
+     * is the more useful thing to surface.
+     */
+    private function firstUnfinishedCompensation(FlowRun $flowRun): ?CompensationRun
+    {
+        return $this->compensationModel()->newQuery()
+            ->where('flow_run_id', $flowRun->id)
+            ->whereIn('status', [CompensationStatus::Pending, CompensationStatus::Running])
             ->orderBy('sequence')
             ->first();
     }

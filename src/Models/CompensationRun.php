@@ -18,10 +18,13 @@ use Illuminate\Support\Carbon;
  * @property ?string $compensation_class
  * @property CompensationStatus $status
  * @property bool $continue_on_failure
+ * @property int $attempts
  * @property ?array<int|string, mixed> $arguments
  * @property ?array<int|string, mixed> $result
  * @property ?array<int|string, mixed> $exception
  * @property ?Carbon $started_at
+ * @property ?int $reclaim_stale_after_seconds
+ * @property ?Carbon $reclaim_stale_at
  * @property ?Carbon $finished_at
  * @property-read FlowRun $flowRun
  */
@@ -40,10 +43,13 @@ class CompensationRun extends Model
             'sequence' => 'integer',
             'status' => CompensationStatus::class,
             'continue_on_failure' => 'boolean',
+            'attempts' => 'integer',
             'arguments' => 'array',
             'result' => 'array',
             'exception' => 'array',
             'started_at' => 'datetime',
+            'reclaim_stale_after_seconds' => 'integer',
+            'reclaim_stale_at' => 'datetime',
             'finished_at' => 'datetime',
         ];
     }
