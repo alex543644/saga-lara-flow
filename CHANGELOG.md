@@ -4,6 +4,12 @@ All notable changes to `saga-lara-flow` will be documented in this file.
 
 ## Unreleased
 
+### Atomic signalable guard on deliver
+
+`SignalDispatcher::deliver()` asserts the run is still Pending/Running/Waiting with a
+conditional `flow_runs` UPDATE inside the same transaction as the signal write, so a stale
+handle from `handles()` cannot persist a wake on a run that has already finished.
+
 ### `FlowQuery::whereId()`
 
 Filter by one or more run ids without dropping to `builder()`: `->whereId(...$runIds)`.

@@ -97,6 +97,24 @@ it('rejects a signal on a terminal run and reports it via signalIfRunning', func
     expect($handle->signalIfRunning('whatever'))->toBeFalse();
 });
 
+it('rejects a signal when the run became terminal after the handle was loaded', function () {
+    $run = SagaFlow::create(SignalOnlyWorkflow::class)->runSync();
+    $handle = SagaFlow::loadFlow($run->id);
+
+    expect($handle->status())->toBe(FlowStatus::Waiting);
+
+    // Finish the run in the database without refreshing the handle — the bulk
+    // path keeps this stale Waiting snapshot across handles()->each(...).
+    $run->markCompleted();
+
+    $signalsBefore = $run->signals()->count();
+
+    expect($handle->status())->toBe(FlowStatus::Waiting)
+        ->and($handle->signalIfRunning('go'))->toBeFalse()
+        ->and(fn () => $handle->signal('go'))->toThrow(CannotSignalTerminalFlowException::class)
+        ->and($run->signals()->count())->toBe($signalsBefore);
+});
+
 it('reports signalIfRunning true for a waiting run', function () {
     useDatabaseQueue();
 
