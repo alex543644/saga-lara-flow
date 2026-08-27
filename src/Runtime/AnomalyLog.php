@@ -11,8 +11,13 @@ use Throwable;
  * EventLog records what happened to a run in business terms. This records the moments
  * where the world turned out not to be what the engine assumed — a claim lost to
  * whoever already owned the row, an outcome write refused because the row had changed
- * hands, a batch already closed by a duplicate before its own job reported. All are
- * ordinary consequences of at-least-once delivery, so none of them fails a job.
+ * hands, a batch already closed by a duplicate before its own job reported, a run
+ * transition refused because the row had moved on. All are ordinary consequences of
+ * at-least-once delivery and of nothing serialising an operator against a worker.
+ *
+ * None of them fails a job. A refused transition also reaches its caller: the engine
+ * absorbs it and stops, but FlowHandle lets it surface, because an operator whose
+ * cancellation did not happen has to be told.
  *
  * Which is why they need a journal of their own: the job succeeds, flow_events stays
  * silent, and an operator investigating a step that ran twice would have nothing to go
@@ -26,6 +31,8 @@ final readonly class AnomalyLog
     public const string REASON_OUTCOME_REJECTED = 'outcome_rejected';
 
     public const string REASON_BATCH_FINISHED_EARLY = 'batch_finished_early';
+
+    public const string REASON_TRANSITION_LOST = 'transition_lost';
 
     /**
      * PSR-3's eight, the only strings a PSR logger accepts. A value outside this set

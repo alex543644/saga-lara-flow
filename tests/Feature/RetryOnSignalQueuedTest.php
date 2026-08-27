@@ -628,10 +628,13 @@ it('does not restart or re-park a parked step while collecting compensations', f
     $step = $final->actions()->where('sequence', 1)->first();
 
     // Compensation-only planning stops at the parked frontier: the step is not
-    // re-executed, not re-parked, and no second marker is written.
+    // re-executed, not re-parked, and no second marker is written. It ends up
+    // Cancelled because the run it belongs to finished, not because the seam touched
+    // it — an unspent retry budget is what shows the park was left alone.
     expect($final->status)->toBe(FlowStatus::Cancelled)
         ->and(FlakyPaymentAction::$calls)->toBe(1)
-        ->and($step->status)->toBe(ActionStatus::AwaitingRetry)
+        ->and($step->status)->toBe(ActionStatus::Cancelled)
+        ->and($step->retry_signal)->toBe('balance-refilled')
         ->and($step->retry_signal_attempts)->toBe(0)
         ->and($final->signals()->count())->toBe($before)
         ->and(CompensationLog::all())->toBe(['undo:created']);

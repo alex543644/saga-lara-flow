@@ -24,6 +24,7 @@ use Throwable;
 /**
  * Persists an action step through its lifecycle (scheduled → started → completed
  * /failed), serializing arguments and results and appending the matching events.
+ * It also settles the steps a finished run leaves behind (settleOpenSteps).
  */
 final readonly class ActionRecorder
 {
@@ -380,6 +381,32 @@ final readonly class ActionRecorder
 
         $actionRun->status = ActionStatus::Failed;
         $actionRun->save();
+    }
+
+    /**
+     * Close every step of a run that reached a terminal state without an outcome of its
+     * own. Cancelled says exactly that: the step stopped because the run under it ended,
+     * not because of anything the step itself did. Steps that already settled keep their
+     * status, so a finished run still shows which of its steps actually ran.
+     *
+     * Only `status` is written: an AwaitingRetry row carries the finished_at of the
+     * attempt that failed, and the moment of the closure is flow_runs.finished_at. No
+     * event is appended, for the same reason settleAwaitingRetry() appends none — the
+     * run's own terminal event records both the moment and the cause.
+     */
+    public function settleOpenSteps(FlowRun $flowRun): int
+    {
+        /** @var class-string<ActionRun> $model */
+        $model = config('saga-lara-flow.models.action_run');
+
+        return $model::query()
+            ->where('flow_run_id', $flowRun->id)
+            ->whereIn('status', [
+                ActionStatus::Pending,
+                ActionStatus::Running,
+                ActionStatus::AwaitingRetry,
+            ])
+            ->update(['status' => ActionStatus::Cancelled]);
     }
 
     /**

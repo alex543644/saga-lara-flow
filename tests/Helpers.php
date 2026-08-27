@@ -69,9 +69,14 @@ if (! function_exists('useDatabaseQueue')) {
         // --sleep=0 matters more than it looks: Worker::daemon() sleeps BEFORE it
         // checks stopWhenEmpty, so every drain would otherwise pay the default three
         // seconds after the queue is already empty.
+        //
+        // --memory is measured against the whole PHP process, not the jobs. The worker
+        // runs inside the test run, so at the default 128 it stops silently the moment
+        // the suite's own footprint passes it, leaving the queue full and the run parked.
         Artisan::call('queue:work', [
             '--stop-when-empty' => true,
             '--sleep' => 0,
+            '--memory' => 4096,
             '--no-interaction' => true,
         ]);
     }

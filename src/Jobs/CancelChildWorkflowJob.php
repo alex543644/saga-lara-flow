@@ -7,6 +7,7 @@ use DiscoveryUkraine\SagaLaraFlow\Contracts\FlowRepository;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\StateMachine;
 use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\RunMode;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\ConcurrentFlowTransitionException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\ParentClosedException;
 use DiscoveryUkraine\SagaLaraFlow\Middleware\LockMiddlewareFactory;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
@@ -54,6 +55,35 @@ class CancelChildWorkflowJob implements ShouldQueue
             return;
         }
 
+        try {
+            $this->close($executor, $sagaRunner, $repository, $stateMachine, $lifecycle, $tenancy, $child);
+        } catch (ConcurrentFlowTransitionException $lost) {
+            // The per-run lock covers jobs and nothing else, so losing the child to an
+            // operator or to a sync drive under the parent's own replay is an ordinary
+            // race. Ending quietly is only right once the child is genuinely closed, or
+            // once another rollback owns its landing — a child still live is one this
+            // job was sent to close, and dropping it here would strand it with a
+            // terminal parent and no close policy left to apply.
+            $current = $repository->find($this->childFlowRunId);
+
+            if ($current !== null && ! $current->isTerminal() && $current->status !== FlowStatus::Cancelling) {
+                throw $lost;
+            }
+        }
+    }
+
+    /**
+     * @throws Throwable
+     */
+    private function close(
+        FlowExecutor $executor,
+        SagaRunner $sagaRunner,
+        FlowRepository $repository,
+        StateMachine $stateMachine,
+        FlowLifecycleRecorder $lifecycle,
+        TenancyManager $tenancy,
+        FlowRun $child,
+    ): void {
         $tenancy->for($child, $child->workflow_class, function () use (
             $executor,
             $sagaRunner,

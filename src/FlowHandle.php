@@ -7,6 +7,7 @@ use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\RunMode;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\CannotCancelTerminalFlowException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\CannotSignalTerminalFlowException;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\ConcurrentFlowTransitionException;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\ChildWorkflowManager;
 use DiscoveryUkraine\SagaLaraFlow\Runtime\FlowExecutor;
@@ -131,6 +132,7 @@ readonly class FlowHandle
      * and carried on the FlowCancelled event. Throws on a terminal run.
      *
      * @throws CannotCancelTerminalFlowException
+     * @throws ConcurrentFlowTransitionException
      */
     public function cancel(?string $reason = null): FlowRun
     {
@@ -154,6 +156,7 @@ readonly class FlowHandle
      * the run lands in Cancelled. Only valid for a non-terminal run.
      *
      * @throws CannotCancelTerminalFlowException
+     * @throws ConcurrentFlowTransitionException
      * @throws Throwable
      */
     public function compensate(): FlowRun

@@ -11,6 +11,7 @@ use DiscoveryUkraine\SagaLaraFlow\Enums\StepExecution;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\ActionClaimFailedException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\CompensationFailedException;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\CompensationUnfinishedException;
+use DiscoveryUkraine\SagaLaraFlow\Exceptions\ConcurrentFlowTransitionException;
 use DiscoveryUkraine\SagaLaraFlow\Jobs\RunCompensationJob;
 use DiscoveryUkraine\SagaLaraFlow\Models\CompensationRun;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
@@ -86,13 +87,19 @@ class SagaRunner
             return;
         }
 
-        if ($this->levelStopped($ranCompensationIds)) {
-            $this->finalize($flowRun, $finalState, $primary);
+        try {
+            if ($this->levelStopped($ranCompensationIds)) {
+                $this->finalize($flowRun, $finalState, $primary);
 
-            return;
+                return;
+            }
+
+            $this->dispatchLevel($flowRun, $remainingLevels, $primary, $finalState);
+        } catch (ConcurrentFlowTransitionException) {
+            // Another actor finished the run while the compensations were in flight; what
+            // they ran is recorded either way. A batch callback is the one landing with no
+            // caller to tell, so it absorbs here rather than in finalize().
         }
-
-        $this->dispatchLevel($flowRun, $remainingLevels, $primary, $finalState);
     }
 
     /**
@@ -179,6 +186,11 @@ class SagaRunner
     }
 
     /**
+     * Land the run once the rollback is done.
+     *
+     * A refused landing is raised, not swallowed: only the caller knows whether losing
+     * the run matters. FlowHandle::compensate() is an operator who has to be told.
+     *
      * @param  array<string, mixed>|null  $primary
      */
     private function finalize(FlowRun $flowRun, FlowStatus $finalState, ?array $primary): void

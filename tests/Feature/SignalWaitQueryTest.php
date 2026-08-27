@@ -68,13 +68,15 @@ it('still finds a step whose signal arrived but whose resume never did', functio
         ->toBe([$parked]);
 });
 
-it('matches on the rows a run holds, not on the run status', function () {
+it('stops matching a run that has finished', function () {
     $parked = parkedRun();
 
     SagaFlow::loadFlow($parked)->cancel();
 
+    // Both filters read the rows a run holds, and a terminal run holds neither an open
+    // wait nor a parked step — so neither can hand an operator a run that would refuse
+    // the signal they were about to send.
     expect(SagaFlow::findRun($parked)->status)->toBe(FlowStatus::Cancelled)
-        ->and(SagaFlow::query()->whereAwaitingRetrySignal('balance-refilled')->count())->toBe(1)
-        ->and(SagaFlow::query()->whereAwaitingSignal('balance-refilled')->count())->toBe(1)
-        ->and(SagaFlow::query()->whereAwaitingRetrySignal('balance-refilled')->signalable()->count())->toBe(0);
+        ->and(SagaFlow::query()->whereAwaitingRetrySignal('balance-refilled')->count())->toBe(0)
+        ->and(SagaFlow::query()->whereAwaitingSignal('balance-refilled')->count())->toBe(0);
 });

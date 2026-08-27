@@ -14,6 +14,7 @@ use Illuminate\Support\Carbon;
 /**
  * Persists the signal lifecycle (waiting → received → consumed) and dispatches
  * the matching events. Signal payloads are stored via the model's JSON cast.
+ * It also settles the waits a finished run leaves open (settleOpenWaits).
  */
 final readonly class SignalRecorder
 {
@@ -226,6 +227,28 @@ final readonly class SignalRecorder
         $signal->refresh();
 
         return true;
+    }
+
+    /**
+     * Close the wait-signals a run that reached a terminal state left open. Cancelled
+     * says the wait ended with the run, not on its own terms — unlike TimedOut, which
+     * means a deadline passed and which replay surfaces as a business error.
+     *
+     * Only open wait-markers are settled. A delivered signal (no wait_sequence) and a
+     * wait already flipped to Received are history — "arrived, nobody consumed it" — and
+     * rewriting them would erase that. No event is appended: the run's own terminal
+     * event records both the moment and the cause.
+     */
+    public function settleOpenWaits(FlowRun $flowRun): int
+    {
+        /** @var class-string<FlowSignal> $model */
+        $model = config('saga-lara-flow.models.flow_signal');
+
+        return $model::query()
+            ->where('flow_run_id', $flowRun->id)
+            ->whereNotNull('wait_sequence')
+            ->where('status', SignalStatus::Waiting)
+            ->update(['status' => SignalStatus::Cancelled]);
     }
 
     private function emitSignalReceived(FlowRun $flowRun, FlowSignal $signal): void

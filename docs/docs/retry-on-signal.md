@@ -97,7 +97,9 @@ A step stops waiting when any one of these happens:
 - **The signal arrives.** One cycle is spent, the step runs again.
 - **The budget runs out.** `retry_signal_attempts` reaches `maxRetries` → hard failure.
 - **The wait times out.** The monitor flips the wait to `timed_out` → hard failure.
-- **The run expires** on its own `expires_at`, or is cancelled.
+- **The run expires** on its own `expires_at`, or is cancelled. The park ends with it: the step is
+  settled as `cancelled` and its wait along with it, so nothing keeps advertising a signal that
+  would no longer be acted on. See [statuses](./statuses.md).
 
 :::info A timed-out wait ends the policy for good
 The wait deadline bounds *the waiting*, not one wait out of several. Once a wait has timed out, the

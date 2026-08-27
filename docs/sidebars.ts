@@ -48,7 +48,7 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Reference',
-      items: ['testing'],
+      items: ['statuses', 'testing'],
     },
   ],
 };

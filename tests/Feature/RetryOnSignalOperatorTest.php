@@ -1,5 +1,6 @@
 <?php
 
+use DiscoveryUkraine\SagaLaraFlow\Contracts\StateMachine;
 use DiscoveryUkraine\SagaLaraFlow\Enums\ActionStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\Enums\RunMode;
@@ -249,21 +250,47 @@ it('drops the retry annotation once the run is no longer waiting', function () {
 
     $cancelled = SagaFlow::findRun($run->id);
 
-    // The step keeps its status — nothing rewrites action rows on cancellation —
-    // so the annotation has to be gated on the run, not on the step. A terminal run
-    // refuses signals, and naming one here would send the operator after a delivery
-    // that does nothing.
+    // Cancelling the run settles the step it was parked on, so both commands see a
+    // step that is plainly over. The retry policy it carried is still on the row for
+    // an operator to read.
     expect($cancelled->status)->toBe(FlowStatus::Cancelled)
         ->and($cancelled->actions()->where('sequence', 1)->first()->status)
-        ->toBe(ActionStatus::AwaitingRetry);
+        ->toBe(ActionStatus::Cancelled);
 
     expect(commandOutput('saga-flow:list'))
         ->toContain('cancelled')
         ->not->toContain('(retry:');
 
-    // Same reasoning in saga-flow:show. The wait-signal keeps its timeout_at, so the
-    // deadline is still there to print — but counting down to it would promise the
-    // operator a wait that nothing is going to resolve.
+    // Same in saga-flow:show. The wait-signal keeps its timeout_at, so the deadline is
+    // still there to print — but counting down to it would promise the operator a wait
+    // that nothing is going to resolve.
+    expect(commandOutput('saga-flow:show', ['run' => $run->id]))
+        ->toContain('balance-refilled 0/')
+        ->not->toContain('until');
+});
+
+it('drops the retry annotation while the run is rolling back', function () {
+    FlakyPaymentAction::reset(failures: 99);
+
+    $run = SagaFlow::create(RetryOnSignalWorkflow::class)
+        ->withArguments('order-rolling-back')
+        ->runSync();
+
+    // Cancelling is not terminal, so the step stays parked with its deadline intact —
+    // the case the run-status gate exists for. Naming its signal would send the operator
+    // after a delivery a run already taken over by its rollback will not act on.
+    app(StateMachine::class)->transition(SagaFlow::findRun($run->id), FlowStatus::Cancelling);
+
+    $rollingBack = SagaFlow::findRun($run->id);
+
+    expect($rollingBack->status)->toBe(FlowStatus::Cancelling)
+        ->and($rollingBack->actions()->where('sequence', 1)->first()->status)
+        ->toBe(ActionStatus::AwaitingRetry);
+
+    expect(commandOutput('saga-flow:list'))
+        ->toContain('cancelling')
+        ->not->toContain('(retry:');
+
     expect(commandOutput('saga-flow:show', ['run' => $run->id]))
         ->toContain('balance-refilled 0/')
         ->not->toContain('until');
