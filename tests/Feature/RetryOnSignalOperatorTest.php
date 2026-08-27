@@ -405,8 +405,8 @@ it('reports signalRetryIfRunning false for a terminal parked run', function () {
 
     $handle = SagaFlow::loadFlow($run->id);
 
-    expect(fn () => $handle->signalRetry())->toThrow(CannotSignalTerminalFlowException::class);
-    expect($handle->signalRetryIfRunning())->toBeFalse();
+    expect(fn () => $handle->signalRetry())->toThrow(CannotSignalTerminalFlowException::class)
+        ->and($handle->signalRetryIfRunning())->toBeFalse();
 });
 
 it('rejects signal() when the name is a declared retry policy', function () {

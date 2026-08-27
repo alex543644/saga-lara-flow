@@ -5,6 +5,8 @@ namespace DiscoveryUkraine\SagaLaraFlow\Models;
 use DiscoveryUkraine\SagaLaraFlow\Contracts\StateMachine;
 use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\Models\Concerns\UsesSagaFlowConnection;
+use Illuminate\Database\Eloquent\Attributes\Scope;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -60,6 +62,12 @@ class FlowRun extends Model
             'repair_attempts' => 'integer',
             'repair_available_at' => 'datetime',
         ];
+    }
+
+    #[Scope]
+    protected function whereSignalable(Builder $query): void
+    {
+        $query->whereIn('status', FlowStatus::signalable());
     }
 
     public function actions(): HasMany

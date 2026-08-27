@@ -163,8 +163,8 @@ readonly class FlowHandle
     /**
      * Safe variant of signalRetry(): swallows the terminal-run rejection and
      * reports whether the signal was delivered. Still throws when nothing is
-     * awaiting a retry (name omitted) or when $name is not a retry policy on
-     * this run — those are the wrong run / wrong method, not a finished one.
+     * awaiting a retry on a signalable run, or when $name is not a retry policy
+     * on this run — those are the wrong run / wrong method, not a finished one.
      *
      * @throws NoAwaitingRetrySignalException
      * @throws InvalidRetrySignalException
@@ -183,9 +183,14 @@ readonly class FlowHandle
     /**
      * @throws NoAwaitingRetrySignalException
      * @throws InvalidRetrySignalException
+     * @throws CannotSignalTerminalFlowException
      */
     private function resolveRetrySignal(?string $name): string
     {
+        if ($this->flowRun->isTerminal()) {
+            throw CannotSignalTerminalFlowException::for($this->flowRun);
+        }
+
         if ($name !== null && ! $this->flowRun->actions()->whereRetrySignal($name)->exists()) {
             throw InvalidRetrySignalException::for($this->flowRun, $name);
         }
@@ -194,15 +199,15 @@ readonly class FlowHandle
             return $name;
         }
 
-        $resolved = $this->flowRun->actions()
+        $retrySignal = $this->flowRun->actions()
             ->whereAwaitingRetrySignal()
             ->value('retry_signal');
 
-        if (! is_string($resolved)) {
-            throw NoAwaitingRetrySignalException::for($this->flowRun);
+        if (is_string($retrySignal)) {
+            return $retrySignal;
         }
 
-        return $resolved;
+        throw NoAwaitingRetrySignalException::for($this->flowRun);
     }
 
     /**

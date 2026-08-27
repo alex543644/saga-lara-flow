@@ -3,7 +3,6 @@
 namespace DiscoveryUkraine\SagaLaraFlow\Runtime;
 
 use DiscoveryUkraine\SagaLaraFlow\Contracts\SignalRepository;
-use DiscoveryUkraine\SagaLaraFlow\Enums\FlowStatus;
 use DiscoveryUkraine\SagaLaraFlow\Exceptions\CannotSignalTerminalFlowException;
 use DiscoveryUkraine\SagaLaraFlow\Jobs\ResumeWorkflowJob;
 use DiscoveryUkraine\SagaLaraFlow\Models\FlowRun;
@@ -70,18 +69,13 @@ readonly class SignalDispatcher
      */
     private function assertCanAcceptSignal(FlowRun $flowRun): void
     {
-        $signalable = array_map(
-            static fn (FlowStatus $status): string => $status->value,
-            FlowStatus::signalable(),
-        );
-
         $attributes = $flowRun->newInstance()
             ->forceFill(['updated_at' => Carbon::now()])
             ->getAttributes();
 
         $alive = $flowRun->newQuery()
             ->whereKey($flowRun->getKey())
-            ->whereIn('status', $signalable)
+            ->whereSignalable()
             ->update($attributes) === 1;
 
         $flowRun->refresh();
